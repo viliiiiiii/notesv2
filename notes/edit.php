@@ -10,14 +10,20 @@ if (!$note || !notes_can_view($note)) {
     exit;
 }
 
-$canEdit       = notes_can_edit($note);
-$canShare      = notes_can_share($note);
-$photos        = notes_fetch_photos($id);
-$shareOptions  = notes_all_users();
-$currentShares = notes_get_share_user_ids($id);
-if (!is_array($currentShares)) $currentShares = [];
-$sharedCount   = count($currentShares);
-$ownerId       = (int)$note['user_id'];
+$canEdit      = notes_can_edit($note);
+$canShare     = notes_can_share($note);
+$photos       = notes_fetch_photos($id);
+$shareOptions = notes_all_users();
+$currentShares= notes_get_share_user_ids($id);
+if (!is_array($currentShares)) { $currentShares = []; }
+$ownerId      = (int)$note['user_id'];
+
+$meta            = notes_fetch_page_meta($id);
+$tags            = notes_fetch_note_tags($id);
+$blocks          = notes_fetch_blocks($id);
+$tagOptions      = notes_all_tag_options();
+$statuses        = notes_available_statuses();
+$priorityOptions = notes_priority_options();
 
 $errors = [];
 
@@ -25,103 +31,93 @@ if (is_post()) {
     if (!verify_csrf_token($_POST[CSRF_TOKEN_NAME] ?? null)) {
         $errors[] = 'Invalid CSRF token.';
     } else {
-
-        // delete note
         if (isset($_POST['delete_note']) && $canEdit) {
             notes_delete($id);
             log_event('note.delete', 'note', $id);
             redirect_with_message('index.php', 'Note deleted.', 'success');
         }
 
-        // save text fields
         if (isset($_POST['save_note']) && $canEdit) {
+            $noteDate = (string)($_POST['note_date'] ?? '');
+            $title    = trim((string)($_POST['title'] ?? ''));
+            $bodyRaw  = trim((string)($_POST['body'] ?? ''));
+            $icon     = trim((string)($_POST['icon'] ?? ''));
+            $coverUrl = trim((string)($_POST['cover_url'] ?? ''));
+            $status   = notes_normalize_status($_POST['status'] ?? ($meta['status'] ?? NOTES_DEFAULT_STATUS));
+
+            $props = notes_default_properties();
+            $props['project']  = trim((string)($_POST['property_project'] ?? ''));
+            $props['location'] = trim((string)($_POST['property_location'] ?? ''));
+            $props['due_date'] = trim((string)($_POST['property_due_date'] ?? ''));
+            if ($props['due_date'] !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $props['due_date'])) {
+                $errors[] = 'Due date must be YYYY-MM-DD.';
+                $props['due_date'] = '';
+            }
+            $priorityInput = trim((string)($_POST['property_priority'] ?? ''));
+            $props['priority'] = in_array($priorityInput, $priorityOptions, true)
+                ? $priorityInput
+                : ($meta['properties']['priority'] ?? 'Medium');
+
+            $tagsPayload = json_decode((string)($_POST['tags_payload'] ?? '[]'), true);
+            $tags        = notes_normalize_tags_input(is_array($tagsPayload) ? $tagsPayload : []);
+
+            [$blocks, $bodyPlain] = notes_parse_blocks_payload($_POST['blocks_payload'] ?? '', $bodyRaw);
+
             $data = [
-                'note_date' => (string)($_POST['note_date'] ?? ''),
-                'title'     => trim((string)($_POST['title'] ?? '')),
-                'body'      => trim((string)($_POST['body'] ?? '')),
+                'note_date'  => $noteDate,
+                'title'      => $title,
+                'body'       => $bodyPlain,
+                'icon'       => $icon,
+                'cover_url'  => $coverUrl,
+                'status'     => $status,
+                'properties' => $props,
+                'tags'       => $tags,
+                'blocks'     => $blocks,
             ];
-            if ($data['title'] === '') $errors[] = 'Title is required.';
-            if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $data['note_date'])) $errors[] = 'Valid date is required.';
+
+            if ($data['title'] === '') {
+                $errors[] = 'Title is required.';
+            }
+            if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $data['note_date'])) {
+                $errors[] = 'Valid date is required.';
+            }
+
             if (!$errors) {
                 notes_update($id, $data);
                 log_event('note.update', 'note', $id);
-                redirect_with_message('view.php?id='.$id, 'Note updated.', 'success');
+                redirect_with_message('view.php?id=' . $id, 'Note updated.', 'success');
             }
-            $note = array_merge($note, $data);
+
+            $note = array_merge($note, ['note_date' => $noteDate, 'title' => $title, 'body' => $bodyPlain]);
+            $meta = [
+                'icon'       => $icon,
+                'cover_url'  => $coverUrl,
+                'status'     => $status,
+                'properties' => $props,
+            ];
         }
 
-        // Only compute BEFORE if we're actually saving shares
-if (isset($_POST['save_shares'])) {
-    $before = array_map('intval', notes_get_share_user_ids($id) ?: []);
+        if (isset($_POST['save_shares']) && $canShare) {
+            $selected = array_map('intval', (array)($_POST['shared_ids'] ?? []));
 
-    if (!$canShare) { http_response_code(403); exit('Forbidden'); }
-
-    $selected = array_map('intval', (array)($_POST['shared_ids'] ?? []));
-    $selected = array_values(array_filter($selected, fn($u) => $u !== $ownerId));
-
-    try {
-        // Persist selection
-        notes_update_shares($id, $selected);
-
-        // AFTER & diff
-        $after = array_map('intval', notes_get_share_user_ids($id) ?: []);
-        $added = array_values(array_diff($after, $before));
-
-        // Notify only new users; never let this crash the request
-        if ($added) {
             try {
-                $me   = current_user();
-                $who  = $me['email'] ?? 'Someone';
-                $t    = trim((string)($note['title'] ?? 'Untitled'));
-                $date = (string)($note['note_date'] ?? '');
-
-                $title   = "A note was shared with you";
-                $body    = "“{$t}” {$date} — shared by {$who}";
-                $link    = "/notes/view.php?id=" . (int)$id;
-                $payload = ['note_id' => (int)$id, 'by' => $who];
-
-                if (!function_exists('notify_users')) {
-                    error_log('notify_users() missing');
-                } else {
-                    notify_users($added, 'note.shared', $title, $body, $link, $payload);
-                }
-                log_event('note.share', 'note', (int)$id, ['added' => $added]);
-            } catch (Throwable $nx) {
-                error_log('notify_users failed: '.$nx->getMessage());
+                $result = notes_apply_shares($id, $selected, $note, true);
+                $currentShares = $result['after'];
+                redirect_with_message('edit.php?id=' . $id, 'Shares updated.', 'success');
+            } catch (Throwable $e) {
+                error_log('notes_update_shares failed: ' . $e->getMessage());
+                $errors[] = 'Failed to update shares.';
             }
         }
 
-        redirect_with_message('edit.php?id='.$id, 'Shares updated.', 'success');
-    } catch (Throwable $e) {
-        error_log('notes_update_shares failed: '.$e->getMessage());
-        $errors[] = 'Failed to update shares.';
-    }
-}
-
-// Send notifications only to newly added users
-if ($added) {
-    $me   = current_user();
-    $who  = $me['email'] ?? 'Someone';
-    $t    = trim((string)($note['title'] ?? 'Untitled'));
-    $date = (string)($note['note_date'] ?? '');
-    $title   = "A note was shared with you";
-    $body    = "“{$t}” {$date} — shared by {$who}";
-    $link    = "/notes/view.php?id=" . (int)$id; // opens the note
-    $payload = ['note_id' => (int)$id, 'by' => $who];
-
-    notify_users($added, 'note.shared', $title, $body, $link, $payload);
-    log_event('note.share', 'note', (int)$id, ['added' => $added]);
-}
-
-        // photo upload/replace
         if (isset($_POST['upload_position']) && $canEdit) {
             $pos = (int)$_POST['upload_position'];
-            if (in_array($pos, [1,2,3], true)) {
+            if (in_array($pos, [1, 2, 3], true)) {
                 try {
                     notes_save_uploaded_photo($id, $pos, 'photo');
-                    redirect_with_message('edit.php?id='.$id, "Photo $pos uploaded.", 'success');
+                    redirect_with_message('edit.php?id=' . $id, "Photo $pos uploaded.", 'success');
                 } catch (Throwable $e) {
-                    $errors[] = 'Photo upload failed: '.$e->getMessage();
+                    $errors[] = 'Photo upload failed: ' . $e->getMessage();
                 }
                 $photos = notes_fetch_photos($id);
             } else {
@@ -129,11 +125,10 @@ if ($added) {
             }
         }
 
-        // photo delete
         if (isset($_POST['delete_photo_id']) && $canEdit) {
             try {
                 notes_remove_photo_by_id((int)$_POST['delete_photo_id']);
-                redirect_with_message('edit.php?id='.$id, 'Photo removed.', 'success');
+                redirect_with_message('edit.php?id=' . $id, 'Photo removed.', 'success');
             } catch (Throwable $e) {
                 $errors[] = 'Failed to remove photo.';
             }
@@ -144,516 +139,304 @@ if ($added) {
 
 $title = 'Edit Note';
 include __DIR__ . '/../includes/header.php';
+
+$composerConfig = [
+    'blocks'   => $blocks,
+    'tags'     => $tags,
+    'icon'     => $meta['icon'],
+    'coverUrl' => $meta['cover_url'],
+];
+$configAttr    = htmlspecialchars(json_encode($composerConfig, JSON_UNESCAPED_UNICODE), ENT_QUOTES, 'UTF-8');
+$selectedShares= array_flip($currentShares);
 ?>
-<style>
-/* ===== Modern Panel Look ===== */
-.panel {
-  border: 1px solid #e7ebf3;
-  border-radius: 14px;
-  background: #fff;
-  box-shadow: 0 6px 18px rgba(16,24,40,0.06);
-  overflow: hidden;
-}
-.panel + .panel { margin-top: 16px; }
-
-.panel__header {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 12px; padding: 14px 16px;
-  background: linear-gradient(135deg, #f7faff 0%, #eef4ff 100%);
-  border-bottom: 1px solid #e7ebf3;
-}
-.panel__title {
-  font-weight: 700; font-size: 16px; color: #0f172a;
-  display: flex; align-items:center; gap: 10px;
-}
-.panel__meta { display: flex; gap: 6px; flex-wrap: wrap; align-items:center; }
-.panel__actions { display: flex; gap: 8px; flex-wrap: wrap; }
-
-.panel__body { padding: 14px 16px; }
-
-/* ===== Compact grid layout ===== */
-.note-shell {
-  display: grid; gap: 16px;
-}
-@media (min-width: 960px) {
-  .note-shell {
-    grid-template-columns: 1.05fr 0.95fr; /* Left fields | Right tabs */
-    align-items: start;
-  }
-}
-
-/* Inputs spacing tighter */
-.panel__body .grid.two label,
-.panel__body .field { margin-bottom: 10px; }
-
-/* Badges */
-.badge { padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; background:#f3f6fb; color:#334155; }
-
-/* ===== Tabs (right side) ===== */
-.tabs { display: flex; align-items: center; gap: 6px; padding: 6px; background:#f6f8fd; border-radius: 10px; }
-.tab-btn {
-  appearance: none; border: 1px solid transparent; background: transparent; color:#475569;
-  padding: 6px 10px; border-radius: 10px; font-size: 13px; cursor: pointer;
-}
-.tab-btn[aria-selected="true"] { background:#fff; border-color:#dfe6f2; color:#0f172a; box-shadow: 0 1px 3px rgba(16,24,40,0.06); }
-
-.tab-panel { display: none; }
-.tab-panel.active { display: block; }
-
-/* ===== Sharing chooser ===== */
-.share-box {
-  border: 1px dashed #dfe6f2; border-radius: 12px; padding: 10px; background: #fbfdff;
-}
-.share-head { display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:space-between; margin-bottom:8px; }
-.share-search { flex:1 1 200px; }
-.share-search input { width:100%; }
-.share-actions { display:flex; gap:6px; flex-wrap:wrap; }
-
-.share-list {
-  max-height: 260px; overflow: auto; padding-right: 6px;
-  display: grid; gap: 6px;
-}
-@media (min-width: 720px) {
-  .share-list { grid-template-columns: repeat(2, minmax(0,1fr)); }
-}
-.share-item {
-  display:flex; gap:8px; align-items:center;
-  padding:10px; border:1px solid #eef1f6; border-radius:10px; background:#fff;
-}
-
-/* ===== Photo modal (reuse your classes, just larger box) ===== */
-.photo-modal .photo-modal-box { max-width: 1080px; width: 92vw; height: 86vh; }
-.photo-modal .photo-modal-body { height: calc(86vh - 56px); }
-
-/* ===== Drag & Drop photo pods ===== */
-.dz-grid{--gap:10px;display:grid;gap:var(--gap);grid-template-columns:repeat(3,1fr)}
-.dz-slot{
-  position:relative;border:1px dashed #cdd6e6;border-radius:12px;background:#f8faff;
-  min-height:160px;display:flex;flex-direction:column;align-items:center;justify-content:center;
-  padding:12px;transition:border-color .15s, background .15s; cursor:pointer;
-}
-.dz-slot:hover{border-color:#90a2c9;background:#f3f7ff}
-.dz-slot.is-dragover{border-color:#2563eb;background:#eef4ff}
-
-/* when a photo exists, pod is “zoom only” */
-.dz-slot.has-photo{cursor:zoom-in}
-
-/* Centered image */
-.dz-thumb{
-  display:block;margin:0 auto;
-  max-width:100%; max-height:220px; width:auto; height:auto;
-  object-fit:contain; border-radius:10px;
-  box-shadow:0 2px 8px rgba(16,24,40,.08);
-}
-
-/* Empty placeholder text */
-.dz-empty-text{color:#69809c;font-size:12px;text-align:center;line-height:1.35}
-
-/* Remove button under the image */
-.dz-actions{margin-top:10px;display:flex;gap:8px;justify-content:center}
-
-/* Hidden file input */
-.dz-input{display:none}
-
-/* Busy overlay */
-.dz-busy::after{
-  content:'Uploading…';position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
-  background:rgba(255,255,255,.7);backdrop-filter:blur(2px);font-weight:700;color:#0f172a;border-radius:12px;
-}
-</style>
-
-<section class="panel">
-  <div class="panel__header">
-    <div class="panel__title">
-      Edit Note
-      <span class="panel__meta">
-        <span class="badge"><?php echo sanitize($note['note_date']); ?></span>
-        <?php if ($sharedCount > 0): ?>
-          <span class="badge">Shared: <?php echo (int)$sharedCount; ?></span>
-        <?php else: ?>
-          <span class="badge">Not shared</span>
-        <?php endif; ?>
-      </span>
+<section class="note-page note-page--edit">
+  <header class="note-page__header">
+    <div>
+      <h1>Edit note</h1>
+      <p class="note-page__subtitle">Update content, status, and collaborators in a Notion-inspired workspace.</p>
     </div>
-    <div class="panel__actions">
-      <a class="btn" href="index.php">Back</a>
-      <a class="btn" href="view.php?id=<?php echo (int)$note['id']; ?>">View</a>
-    </div>
-  </div>
+    <a class="btn" href="view.php?id=<?= $id; ?>">View note</a>
+  </header>
 
   <?php if ($errors): ?>
-    <div class="panel__body">
-      <div class="flash flash-error"><?php echo sanitize(implode(' ', $errors)); ?></div>
-    </div>
+    <div class="flash flash-error"><?= sanitize(implode(' ', $errors)); ?></div>
   <?php endif; ?>
 
-  <div class="panel__body">
-    <div class="note-shell compact">
-      <!-- LEFT: note fields -->
-      <section class="panel">
-        <div class="panel__header">
-          <div class="panel__title">Details</div>
-        </div>
-        <div class="panel__body">
-          <form method="post" class="grid two" novalidate>
-            <label>Date
-              <input type="date" name="note_date" value="<?php echo sanitize($note['note_date']); ?>" required <?php echo $canEdit?'':'disabled'; ?>>
+  <div class="note-layout">
+    <form method="post" class="note-form" novalidate>
+      <div class="note-composer card card--surface" data-note-composer data-config="<?= $configAttr; ?>">
+        <input type="hidden" name="blocks_payload" data-blocks-field>
+        <input type="hidden" name="tags_payload" data-tags-field>
+        <textarea name="body" data-body-fallback class="visually-hidden"><?= sanitize($note['body'] ?? ''); ?></textarea>
+
+        <div class="note-cover" data-cover-preview>
+          <div class="note-cover__overlay">
+            <label class="note-cover__control">Cover image URL
+              <input type="url" name="cover_url" data-cover-input placeholder="https://…" value="<?= sanitize($meta['cover_url']); ?>">
             </label>
-
-            <label>Title
-              <input type="text" name="title" value="<?php echo sanitize($note['title']); ?>" required <?php echo $canEdit?'':'disabled'; ?>>
-            </label>
-
-            <label class="field-span-2">Notes
-              <textarea name="body" rows="7" <?php echo $canEdit?'':'disabled'; ?>><?php echo sanitize($note['body'] ?? ''); ?></textarea>
-            </label>
-
-            <input type="hidden" name="<?php echo CSRF_TOKEN_NAME; ?>" value="<?php echo csrf_token(); ?>">
-
-            <?php if ($canEdit): ?>
-              <div class="form-actions field-span-2">
-                <button class="btn primary" type="submit" name="save_note" value="1">Save</button>
-                <a class="btn secondary" href="view.php?id=<?php echo (int)$note['id']; ?>">Cancel</a>
-              </div>
-            <?php endif; ?>
-          </form>
-
-          <?php if ($canEdit): ?>
-            <form method="post" onsubmit="return confirm('Delete this note?');" class="inline" style="margin-top:.6rem">
-              <input type="hidden" name="<?php echo CSRF_TOKEN_NAME; ?>" value="<?php echo csrf_token(); ?>">
-              <input type="hidden" name="delete_note" value="1">
-              <button class="btn danger" type="submit">Delete</button>
-            </form>
-          <?php endif; ?>
-        </div>
-      </section>
-
-      <!-- RIGHT: tabs (Photos / Sharing) -->
-      <section class="panel">
-        <div class="panel__header" style="align-items: flex-end;">
-          <div class="panel__title">Assets & Access</div>
-          <div class="tabs" role="tablist" aria-label="Asset tabs">
-            <button class="tab-btn" role="tab" aria-selected="true" aria-controls="tab-photos" id="tabbtn-photos">Photos</button>
-            <?php if ($canShare): ?>
-              <button class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-sharing" id="tabbtn-sharing">Sharing</button>
-            <?php endif; ?>
+            <button type="button" class="btn small secondary" data-cover-clear>Remove cover</button>
           </div>
         </div>
 
-        <div class="panel__body">
-          <!-- Photos panel -->
-          <div id="tab-photos" class="tab-panel active" role="tabpanel" aria-labelledby="tabbtn-photos">
-            <?php if (array_filter($photos)): ?>
-              <div style="display:flex; justify-content:flex-end; margin-bottom:8px;">
-                <button class="btn small" type="button" id="openAllPhotos">View larger</button>
+        <div class="note-head">
+          <span class="note-head__icon" data-icon-preview><?= sanitize($meta['icon'] ?: '📄'); ?></span>
+          <div class="note-head__fields">
+            <label class="note-head__icon-input">Icon
+              <input type="text" name="icon" maxlength="4" data-icon-input placeholder="💡" value="<?= sanitize($meta['icon']); ?>">
+            </label>
+            <input class="note-head__title" type="text" name="title" value="<?= sanitize($note['title'] ?? ''); ?>" placeholder="Untitled" required>
+          </div>
+        </div>
+
+        <div class="note-meta">
+          <label>Date
+            <input type="date" name="note_date" value="<?= sanitize($note['note_date'] ?? ''); ?>" required>
+          </label>
+          <label>Status
+            <select name="status">
+              <?php foreach ($statuses as $slug => $label): ?>
+                <option value="<?= sanitize($slug); ?>" <?= notes_normalize_status($_POST['status'] ?? ($meta['status'] ?? NOTES_DEFAULT_STATUS)) === $slug ? 'selected' : ''; ?>><?= sanitize($label); ?></option>
+              <?php endforeach; ?>
+            </select>
+          </label>
+        </div>
+
+        <div class="note-tags" data-tag-section>
+          <div class="note-tags__header">
+            <span>Tags</span>
+            <?php if ($tagOptions): ?>
+              <div class="note-tags__suggestions" aria-hidden="true">
+                <?php foreach (array_slice($tagOptions, 0, 3) as $tag): ?>
+                  <span class="note-tag-chip" style="--tag-chip: <?= sanitize($tag['color']); ?>;">#<?= sanitize($tag['label']); ?></span>
+                <?php endforeach; ?>
               </div>
             <?php endif; ?>
+          </div>
+          <div class="note-tags__list" data-tag-list></div>
+          <input type="text" class="note-tags__input" data-tag-input placeholder="Add tag and press Enter">
+        </div>
 
-            <div class="dz-grid" id="notePhotoGrid">
-              <?php for ($i=1; $i<=3; $i++): $p = $photos[$i] ?? null; ?>
-                <div
-                  class="dz-slot<?php echo $p ? ' has-photo' : ''; ?>"
-                  data-slot="<?php echo $i; ?>"
-                  data-csrf-name="<?php echo CSRF_TOKEN_NAME; ?>"
-                  data-csrf-value="<?php echo csrf_token(); ?>"
-                  title="<?php echo $p ? 'Click to view fullscreen' : 'Click or drop to upload'; ?>"
-                >
-                  <?php if ($p): ?>
-                    <img
-                      src="<?php echo sanitize($p['url']); ?>"
-                      alt="Note photo <?php echo $i; ?>"
-                      class="dz-thumb js-zoom"
-                      loading="lazy"
-                      decoding="async"
-                    >
-                    <?php if ($canEdit): ?>
-                      <div class="dz-actions">
-                        <form method="post" onsubmit="return confirm('Remove this photo?');">
-                          <input type="hidden" name="<?php echo CSRF_TOKEN_NAME; ?>" value="<?php echo csrf_token(); ?>">
-                          <input type="hidden" name="delete_photo_id" value="<?php echo (int)$p['id']; ?>">
-                          <button class="btn small" type="submit">Remove</button>
-                        </form>
-                      </div>
-                    <?php endif; ?>
-                  <?php else: ?>
-                    <div class="dz-empty-text">Drop image here<br>or tap to upload</div>
-                  <?php endif; ?>
+        <div class="note-properties">
+          <div class="note-properties__item">
+            <label>Project
+              <input type="text" name="property_project" value="<?= sanitize($meta['properties']['project'] ?? ''); ?>" placeholder="Site or initiative">
+            </label>
+          </div>
+          <div class="note-properties__item">
+            <label>Location
+              <input type="text" name="property_location" value="<?= sanitize($meta['properties']['location'] ?? ''); ?>" placeholder="Area, floor, building">
+            </label>
+          </div>
+          <div class="note-properties__item">
+            <label>Due date
+              <input type="date" name="property_due_date" value="<?= sanitize($meta['properties']['due_date'] ?? ''); ?>">
+            </label>
+          </div>
+          <div class="note-properties__item">
+            <label>Priority
+              <select name="property_priority">
+                <?php foreach ($priorityOptions as $option): ?>
+                  <option value="<?= sanitize($option); ?>" <?= (($meta['properties']['priority'] ?? 'Medium') === $option) ? 'selected' : ''; ?>><?= sanitize($option); ?></option>
+                <?php endforeach; ?>
+              </select>
+            </label>
+          </div>
+        </div>
 
+        <section class="block-editor">
+          <header class="block-editor__header">
+            <h2>Page content</h2>
+            <div class="block-editor__toolbar" data-block-toolbar>
+              <button type="button" class="chip" data-add-block="paragraph">Text</button>
+              <button type="button" class="chip" data-add-block="heading1">Heading 1</button>
+              <button type="button" class="chip" data-add-block="heading2">Heading 2</button>
+              <button type="button" class="chip" data-add-block="todo">To-do</button>
+              <button type="button" class="chip" data-add-block="bulleted">Bulleted list</button>
+              <button type="button" class="chip" data-add-block="numbered">Numbered list</button>
+              <button type="button" class="chip" data-add-block="callout">Callout</button>
+              <button type="button" class="chip" data-add-block="quote">Quote</button>
+              <button type="button" class="chip" data-add-block="divider">Divider</button>
+            </div>
+          </header>
+          <div class="block-editor__list" data-block-list></div>
+        </section>
+      </div>
+
+      <input type="hidden" name="<?= CSRF_TOKEN_NAME; ?>" value="<?= csrf_token(); ?>">
+      <div class="note-form__actions">
+        <button class="btn primary" type="submit" name="save_note" value="1">Save changes</button>
+        <a class="btn secondary" href="view.php?id=<?= $id; ?>">Cancel</a>
+      </div>
+    </form>
+
+    <aside class="note-sidebar">
+      <div class="card card--surface note-attachments">
+        <h2>Attachments</h2>
+        <p class="muted">Manage up to three photos for this note.</p>
+        <div class="note-attachments__slots">
+          <?php for ($i = 1; $i <= 3; $i++): $photo = $photos[$i] ?? null; ?>
+            <div class="note-attachment">
+              <div class="note-attachment__preview">
+                <?php if ($photo): ?>
+                  <img src="<?= sanitize($photo['url']); ?>" alt="Attachment <?= $i; ?>">
+                <?php else: ?>
+                  <span class="muted">Empty slot <?= $i; ?></span>
+                <?php endif; ?>
+              </div>
+              <div class="note-attachment__actions">
+                <?php if ($photo): ?>
+                  <a class="btn small" href="<?= sanitize($photo['url']); ?>" target="_blank" rel="noopener">Open</a>
                   <?php if ($canEdit): ?>
-                    <!-- Hidden picker (tap/click) -->
-                    <form method="post" enctype="multipart/form-data" class="dz-form">
-                      <input type="hidden" name="<?php echo CSRF_TOKEN_NAME; ?>" value="<?php echo csrf_token(); ?>">
-                      <input type="hidden" name="upload_position" value="<?php echo $i; ?>">
-                      <input class="dz-input" type="file" name="photo" accept="image/*,image/heic,image/heif">
-                    </form>
+                  <form method="post" onsubmit="return confirm('Remove this attachment?');">
+                    <input type="hidden" name="<?= CSRF_TOKEN_NAME; ?>" value="<?= csrf_token(); ?>">
+                    <button class="btn small secondary" type="submit" name="delete_photo_id" value="<?= (int)$photo['id']; ?>">Remove</button>
+                  </form>
                   <?php endif; ?>
-                </div>
-              <?php endfor; ?>
-            </div>
-          </div>
-
-          <!-- Sharing panel -->
-          <?php if ($canShare): ?>
-            <div id="tab-sharing" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-sharing">
-              <div class="share-box" id="shareBox">
-                <div class="share-head">
-                  <div class="share-search">
-                    <input type="search" id="shareSearch" class="input" placeholder="Search users…" autocomplete="off">
-                  </div>
-                  <div class="share-actions">
-                    <button class="btn small" type="button" id="shareSelectAll">Select all</button>
-                    <button class="btn small secondary" type="button" id="shareClear">Clear</button>
-                    <label class="small" style="display:flex;align-items:center;gap:6px;">
-                      <input type="checkbox" id="shareOnlySelected">
-                      <span>Only selected</span>
+                <?php elseif ($canEdit): ?>
+                  <form method="post" enctype="multipart/form-data" class="note-upload">
+                    <input type="hidden" name="<?= CSRF_TOKEN_NAME; ?>" value="<?= csrf_token(); ?>">
+                    <input type="hidden" name="upload_position" value="<?= $i; ?>">
+                    <label class="btn small">
+                      Choose
+                      <input type="file" name="photo" accept="image/*,image/heic,image/heif" class="visually-hidden" required>
                     </label>
-                  </div>
-                </div>
-
-                <form method="post">
-                  <div class="share-list" id="shareList" role="group" aria-label="Share with users">
-                    <?php foreach ($shareOptions as $u): ?>
-                      <?php
-                        $uid = (int)$u['id'];
-                        if ($uid === $ownerId) continue;
-                        $checked = in_array($uid, $currentShares, true) ? 'checked' : '';
-                      ?>
-                      <label class="share-item" data-label="<?php echo htmlspecialchars(strtolower((string)$u['email']), ENT_QUOTES, 'UTF-8'); ?>">
-                        <input type="checkbox" name="shared_ids[]" value="<?php echo $uid; ?>" <?php echo $checked; ?>>
-                        <span><?php echo sanitize($u['email']); ?></span>
-                      </label>
-                    <?php endforeach; ?>
-                  </div>
-
-                  <input type="hidden" name="<?php echo CSRF_TOKEN_NAME; ?>" value="<?php echo csrf_token(); ?>">
-                  <div class="form-actions" style="margin-top:10px;">
-                    <button class="btn" type="submit" name="save_shares" value="1">Save Shares</button>
-                  </div>
-                </form>
+                    <button class="btn primary small" type="submit">Upload</button>
+                  </form>
+                <?php else: ?>
+                  <span class="muted">No attachment.</span>
+                <?php endif; ?>
               </div>
             </div>
-          <?php endif; ?>
+          <?php endfor; ?>
         </div>
-      </section>
+      </div>
 
-    </div>
+      <?php if ($canShare): ?>
+      <form method="post" class="card card--surface note-share">
+        <h2>Share with teammates</h2>
+        <p class="muted">Select collaborators who should have access.</p>
+        <div class="note-share__list">
+          <?php foreach ($shareOptions as $user): $uid = (int)($user['id'] ?? 0); $label = trim((string)($user['email'] ?? '')); ?>
+            <label class="note-share__option">
+              <input type="checkbox" name="shared_ids[]" value="<?= $uid; ?>" <?= isset($selectedShares[$uid]) ? 'checked' : ''; ?> <?= $uid === $ownerId ? 'disabled' : ''; ?>>
+              <span><?= sanitize($label !== '' ? $label : ('User #'.$uid)); ?></span>
+              <?php if ($uid === $ownerId): ?><span class="badge">Owner</span><?php endif; ?>
+            </label>
+          <?php endforeach; ?>
+        </div>
+        <input type="hidden" name="<?= CSRF_TOKEN_NAME; ?>" value="<?= csrf_token(); ?>">
+        <div class="note-share__actions">
+          <button class="btn primary" type="submit" name="save_shares" value="1">Update sharing</button>
+        </div>
+      </form>
+      <?php endif; ?>
+
+      <?php if ($canEdit): ?>
+      <form method="post" class="card note-danger" onsubmit="return confirm('Delete this note? This cannot be undone.');">
+        <h2>Danger zone</h2>
+        <p class="muted">Deleting removes the note, its blocks, comments, and attachments.</p>
+        <input type="hidden" name="<?= CSRF_TOKEN_NAME; ?>" value="<?= csrf_token(); ?>">
+        <button class="btn danger" type="submit" name="delete_note" value="1">Delete note</button>
+      </form>
+      <?php endif; ?>
+    </aside>
   </div>
 </section>
 
-<!-- Zoom Modal (bigger) -->
-<div id="notePhotoModal" class="photo-modal hidden" aria-hidden="true">
-  <div class="photo-modal-backdrop" data-close-note-photo></div>
-  <div class="photo-modal-box" role="dialog" aria-modal="true" aria-labelledby="notePhotoModalTitle">
-    <div class="photo-modal-header">
-      <h3 id="notePhotoModalTitle">Photos</h3>
-      <button class="close-btn" type="button" title="Close" data-close-note-photo>&times;</button>
-    </div>
-    <div id="notePhotoModalBody" class="photo-modal-body"></div>
-  </div>
-</div>
+<style>
+.note-page{ display:grid; gap:1.25rem; padding-bottom:2rem; }
+.note-page__header{ display:flex; justify-content:space-between; align-items:flex-start; gap:.75rem; flex-wrap:wrap; }
+.note-page__header h1{ margin:0; font-weight:600; }
+.note-page__subtitle{ margin:.35rem 0 0; color:#64748b; max-width:42ch; }
+.note-layout{ display:grid; gap:1.25rem; }
+@media (min-width:1024px){ .note-layout{ grid-template-columns:minmax(0,2fr) minmax(0,1fr); align-items:start; } }
 
-<script>
-/* Tabs */
-document.addEventListener('DOMContentLoaded', () => {
-  const photosBtn  = document.getElementById('tabbtn-photos');
-  const shareBtn   = document.getElementById('tabbtn-sharing');
-  const photosPane = document.getElementById('tab-photos');
-  const sharePane  = document.getElementById('tab-sharing');
+.note-form{ display:grid; gap:1.25rem; }
+.note-composer{ background:#fff; border:1px solid #e2e8f0; border-radius:16px; overflow:hidden; box-shadow:0 6px 18px rgba(15,23,42,.04); }
+.note-sidebar{ display:grid; gap:1rem; }
 
-  function selectTab(which) {
-    if (which === 'photos') {
-      photosBtn?.setAttribute('aria-selected','true');
-      photosPane?.classList.add('active');
-      if (shareBtn) shareBtn.setAttribute('aria-selected','false');
-      if (sharePane) sharePane.classList.remove('active');
-    } else {
-      shareBtn?.setAttribute('aria-selected','true');
-      sharePane?.classList.add('active');
-      photosBtn?.setAttribute('aria-selected','false');
-      photosPane?.classList.remove('active');
-    }
-  }
-  photosBtn?.addEventListener('click', () => selectTab('photos'));
-  shareBtn?.addEventListener('click', () => selectTab('share'));
-});
+.note-cover{ position:relative; height:200px; background:linear-gradient(135deg,#f8fafc,#e2e8f0); border-radius:16px 16px 0 0; background-size:cover; background-position:center; }
+.note-cover__overlay{ position:absolute; inset:0; padding:1rem 1.25rem; display:flex; justify-content:space-between; align-items:flex-end; gap:.75rem; background:linear-gradient(180deg,rgba(15,23,42,0.05),rgba(15,23,42,0.25)); color:#f8fafc; }
+.note-cover__control{ display:flex; flex-direction:column; gap:.35rem; font-size:.85rem; }
+.note-cover__control input{ border-radius:10px; border:1px solid rgba(255,255,255,.6); background:rgba(15,23,42,.25); color:#fff; padding:.4rem .7rem; }
+.note-cover__control input::placeholder{ color:rgba(248,250,252,.8); }
+.note-cover__overlay .btn{ font-size:.85rem; }
 
-/* Photo modal logic */
-document.addEventListener('DOMContentLoaded', () => {
-  const grid   = document.getElementById('notePhotoGrid');
-  const modal  = document.getElementById('notePhotoModal');
-  const bodyEl = document.getElementById('notePhotoModalBody');
-  const openAllBtn = document.getElementById('openAllPhotos');
+.note-head{ display:flex; gap:1rem; align-items:center; padding:1.25rem 1.5rem 0; }
+.note-head__icon{ width:52px; height:52px; border-radius:14px; background:#f1f5f9; border:1px solid #e2e8f0; display:grid; place-items:center; font-size:1.6rem; }
+.note-head__fields{ display:flex; flex-direction:column; gap:.45rem; width:100%; }
+.note-head__icon-input label{ font-size:.8rem; color:#64748b; }
+.note-head__icon-input input{ width:72px; padding:.45rem .55rem; border-radius:.65rem; border:1px solid #d0d7e2; background:#fff; }
+.note-head__title{ font-size:1.8rem; font-weight:600; border:none; border-bottom:1px solid transparent; padding:.2rem 0; width:100%; }
+.note-head__title:focus{ outline:none; border-color:#6366f1; }
 
-  function openModal() {
-    modal.classList.remove('hidden');
-    modal.setAttribute('aria-hidden','false');
-    document.body.style.overflow = 'hidden';
-  }
-  function closeModal() {
-    modal.classList.add('hidden');
-    modal.setAttribute('aria-hidden','true');
-    document.body.style.overflow = '';
-    bodyEl.innerHTML = '';
-  }
+.note-meta{ padding:0 1.5rem 1.25rem; display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:.9rem; }
+.note-meta label{ display:flex; flex-direction:column; gap:.35rem; font-size:.8rem; text-transform:uppercase; letter-spacing:.08em; color:#64748b; }
+.note-meta input, .note-meta select{ padding:.55rem .75rem; border-radius:.65rem; border:1px solid #d0d7e2; background:#fff; font-size:.95rem; }
 
-  modal.addEventListener('click', (e) => {
-    if (e.target.matches('[data-close-note-photo], .photo-modal-backdrop')) closeModal();
-  });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !modal.classList.contains('hidden')) closeModal();
-  });
+.note-tags{ padding:1.25rem 1.5rem; border-top:1px solid #e2e8f0; display:grid; gap:.6rem; }
+.note-tags__header{ display:flex; gap:.65rem; align-items:center; font-weight:600; }
+.note-tags__suggestions{ display:flex; gap:.35rem; font-size:.75rem; color:#64748b; flex-wrap:wrap; }
+.note-tags__list{ display:flex; flex-wrap:wrap; gap:.4rem; }
+.note-tags__input{ border:1px dashed #d0d7e2; border-radius:.65rem; padding:.45rem .7rem; min-width:180px; background:#f8fafc; }
+.note-tag{ display:inline-flex; align-items:center; gap:.3rem; background:#f1f5f9; border:1px solid #e2e8f0; color:#1f2937; padding:.3rem .6rem; border-radius:999px; font-size:.8rem; position:relative; }
+.note-tag::before{ content:''; width:6px; height:6px; border-radius:50%; background:var(--tag-color,#6366f1); }
+.note-tag__remove{ background:none; border:none; cursor:pointer; color:inherit; font-size:.9rem; line-height:1; padding:0; }
 
-  function injectImages(urls){
-    const frag = document.createDocumentFragment();
-    urls.forEach(u => {
-      if (!u) return;
-      const img = document.createElement('img');
-      img.loading = 'lazy';
-      img.decoding = 'async';
-      img.src = u;
-      img.alt = 'Note photo';
-      frag.appendChild(img);
-    });
-    bodyEl.innerHTML = '';
-    bodyEl.appendChild(frag);
-  }
+.note-properties{ padding:0 1.5rem 1.5rem; display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:.9rem; border-top:1px solid #e2e8f0; }
+.note-properties__item label{ display:flex; flex-direction:column; gap:.35rem; font-size:.8rem; color:#475569; }
+.note-properties__item input, .note-properties__item select{ padding:.55rem .7rem; border-radius:.65rem; border:1px solid #d0d7e2; background:#fff; }
 
-  if (grid) {
-    grid.addEventListener('click', (e) => {
-      const target = e.target.closest('.js-zoom');
-      if (!target) return;
-      const imgs = Array.from(grid.querySelectorAll('img[src]')).map(i => i.getAttribute('src')).filter(Boolean);
-      const clicked = target.getAttribute('src');
-      const ordered = [clicked].concat(imgs.filter(u => u !== clicked));
-      injectImages(ordered);
-      openModal();
-    });
-  }
-  if (openAllBtn) {
-    openAllBtn.addEventListener('click', () => {
-      const imgs = Array.from(grid.querySelectorAll('img[src]')).map(i => i.getAttribute('src')).filter(Boolean);
-      if (!imgs.length) return;
-      injectImages(imgs);
-      openModal();
-    });
-  }
-});
+.block-editor{ padding:1.5rem; border-top:1px solid #e2e8f0; display:grid; gap:1rem; }
+.block-editor__header{ display:flex; justify-content:space-between; gap:.75rem; align-items:center; flex-wrap:wrap; }
+.block-editor__header h2{ margin:0; font-size:1.05rem; font-weight:600; }
+.block-editor__toolbar{ display:flex; gap:.45rem; flex-wrap:wrap; }
+.block-editor__list{ display:grid; gap:.85rem; }
+.composer-block{ border:1px solid #e2e8f0; border-radius:12px; padding:1rem; display:grid; gap:.7rem; background:#fff; box-shadow:0 4px 12px rgba(15,23,42,.03); }
+.composer-block__head{ display:flex; justify-content:space-between; align-items:center; gap:.6rem; }
+.composer-block__type{ padding:.35rem .6rem; border-radius:.6rem; border:1px solid #d0d7e2; background:#f8fafc; font-size:.8rem; }
+.composer-block__actions{ display:flex; gap:.35rem; }
+.composer-block__btn{ border:1px solid #d0d7e2; background:#f8fafc; border-radius:.5rem; padding:.3rem .55rem; cursor:pointer; font-size:.8rem; }
+.composer-block__btn--danger{ color:#b91c1c; border-color:#fecaca; background:#fee2e2; }
+.composer-block__btn:disabled{ opacity:.45; cursor:not-allowed; }
+.composer-block__body{ display:grid; gap:.6rem; }
+.composer-block__text{ min-height:110px; border-radius:.65rem; border:1px solid #d0d7e2; padding:.6rem .7rem; resize:vertical; font-size:.95rem; background:#fff; }
+.composer-block__checkbox{ font-size:.82rem; color:#475569; display:flex; gap:.35rem; align-items:center; }
+.composer-block__icon-input{ font-size:.82rem; display:flex; flex-direction:column; gap:.3rem; }
+.composer-block__icon-input input{ width:80px; padding:.4rem .55rem; border-radius:.6rem; border:1px solid #d0d7e2; }
+.composer-block__hint{ margin:0; font-size:.78rem; color:#94a3b8; }
+.composer-block__divider{ height:1px; background:#e2e8f0; border-radius:999px; }
+.note-form__actions{ display:flex; justify-content:flex-end; gap:.8rem; flex-wrap:wrap; padding:0 1.5rem 1.5rem; }
+.note-attachments__slots{ display:grid; gap:.75rem; }
+.note-attachment{ border:1px solid #e2e8f0; border-radius:12px; background:#fff; overflow:hidden; display:grid; gap:.65rem; box-shadow:0 4px 12px rgba(15,23,42,.04); }
+.note-attachment__preview{ background:#f8fafc; display:grid; place-items:center; min-height:130px; }
+.note-attachment__preview img{ width:100%; height:100%; object-fit:cover; }
+.note-attachment__actions{ display:flex; gap:.5rem; justify-content:space-between; padding:0 1rem 1rem; flex-wrap:wrap; }
 
-/* Sharing: search, select-all, clear, only-selected */
-document.addEventListener('DOMContentLoaded', () => {
-  const list  = document.getElementById('shareList');
-  const search= document.getElementById('shareSearch');
-  const onlySelected = document.getElementById('shareOnlySelected');
-  const selectAllBtn = document.getElementById('shareSelectAll');
-  const clearBtn = document.getElementById('shareClear');
+.note-upload{ display:flex; gap:.45rem; align-items:center; }
+.note-share__list{ display:grid; gap:.45rem; margin-top:.75rem; }
+.note-share__option{ display:flex; align-items:center; gap:.6rem; padding:.6rem .75rem; border:1px solid #e2e8f0; border-radius:.65rem; background:#fff; }
+.note-share__actions{ margin-top:.9rem; display:flex; justify-content:flex-end; }
+.note-danger{ border:1px solid #fecaca; background:#fff7f7; padding:1.1rem 1.25rem; border-radius:12px; display:grid; gap:.65rem; }
 
-  if (!list) return;
+.card--surface{ background:#fff; border:1px solid #e2e8f0; border-radius:14px; box-shadow:0 4px 14px rgba(15,23,42,.04); padding:1.25rem 1.5rem; }
+.badge{ padding:.25rem .55rem; border-radius:999px; font-size:.72rem; font-weight:600; background:#f1f5f9; color:#334155; border:1px solid #e2e8f0; }
+.muted{ color:#64748b; font-size:.9rem; }
+.btn.danger{ background:#ef4444; border-color:#ef4444; color:#fff; }
+.btn.danger:hover{ background:#dc2626; border-color:#dc2626; }
+.btn.secondary{ background:#f8fafc; border:1px solid #d0d7e2; color:#1e293b; }
+.btn.secondary:hover{ background:#e2e8f0; }
+.visually-hidden{ position:absolute !important; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0; }
 
-  function applyFilters() {
-    const q = (search?.value || '').trim().toLowerCase();
-    const only = !!(onlySelected && onlySelected.checked);
-    const items = list.querySelectorAll('.share-item');
-    items.forEach(it => {
-      const label = it.getAttribute('data-label') || '';
-      const cb    = it.querySelector('input[type="checkbox"]');
-      let show = true;
-      if (q && !label.includes(q)) show = false;
-      if (only && cb && !cb.checked) show = false;
-      it.style.display = show ? '' : 'none';
-    });
-  }
+@media (max-width:720px){
+  .note-head{ flex-direction:column; align-items:flex-start; }
+  .note-head__fields{ width:100%; }
+  .note-page__header{ flex-direction:column; align-items:flex-start; }
+  .card--surface{ padding:1.1rem 1.25rem; }
+}
+</style>
 
-  search?.addEventListener('input', applyFilters);
-  onlySelected?.addEventListener('change', applyFilters);
 
-  selectAllBtn?.addEventListener('click', () => {
-    list.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = true; });
-    applyFilters();
-  });
-  clearBtn?.addEventListener('click', () => {
-    list.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = false; });
-    applyFilters();
-  });
-});
-</script>
-<script>
-document.addEventListener('DOMContentLoaded', () => {
-  const grid = document.getElementById('notePhotoGrid');
-  if (!grid) return;
-
-  // Click to open file picker (only when slot is empty)
-  grid.addEventListener('click', (e) => {
-    const slot = e.target.closest('.dz-slot');
-    if (!slot) return;
-    if (slot.classList.contains('has-photo')) return; // image present -> fullscreen only
-    if (e.target.closest('form')) return;             // avoid clicking remove form
-
-    const input = slot.querySelector('.dz-input');
-    if (input) input.click();
-  });
-
-  // File picker -> normal form submit (page reload)
-  grid.addEventListener('change', (e) => {
-    const input = e.target;
-    if (!(input instanceof HTMLInputElement)) return;
-    if (!input.classList.contains('dz-input')) return;
-    const form = input.closest('.dz-form');
-    if (!form || !input.files || !input.files[0]) return;
-    form.submit(); // posts back to same page and reloads by server redirect
-  });
-
-  // Drag & drop upload via fetch -> reload after (only when slot is empty)
-  function addDnD(slotEl){
-    if (slotEl.classList.contains('has-photo')) return; // disable DnD when a photo exists
-
-    ['dragenter','dragover'].forEach(ev => {
-      slotEl.addEventListener(ev, (e) => {
-        e.preventDefault(); e.stopPropagation();
-        slotEl.classList.add('is-dragover');
-      });
-    });
-    ;['dragleave','drop'].forEach(ev => {
-      slotEl.addEventListener(ev, (e) => {
-        e.preventDefault(); e.stopPropagation();
-        if (ev === 'dragleave' && !slotEl.contains(e.relatedTarget)) {
-          slotEl.classList.remove('is-dragover');
-        }
-      });
-    });
-    slotEl.addEventListener('drop', async (e) => {
-      slotEl.classList.remove('is-dragover');
-      const files = e.dataTransfer?.files;
-      if (!files || !files[0]) return;
-
-      const file = files[0];
-      const pos  = slotEl.getAttribute('data-slot');
-      const csrfName  = slotEl.getAttribute('data-csrf-name');
-      const csrfValue = slotEl.getAttribute('data-csrf-value');
-
-      const fd = new FormData();
-      if (csrfName && csrfValue) fd.append(csrfName, csrfValue);
-      fd.append('upload_position', pos || '');
-      fd.append('photo', file, file.name);
-
-      // Visual busy state
-      slotEl.classList.add('dz-busy');
-      try {
-        await fetch(location.href, {
-          method: 'POST',
-          body: fd,
-          credentials: 'same-origin'
-        });
-        location.reload();
-      } catch (err) {
-        console.error(err);
-        alert('Upload failed. Please try again.');
-        slotEl.classList.remove('dz-busy');
-      }
-    });
-  }
-
-  grid.querySelectorAll('.dz-slot').forEach(addDnD);
-});
-</script>
+<script src="composer.js"></script>
 
 <?php include __DIR__ . '/../includes/footer.php';
