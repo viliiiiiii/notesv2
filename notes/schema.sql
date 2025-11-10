@@ -37,6 +37,21 @@ CREATE TABLE IF NOT EXISTS note_photos (
   CONSTRAINT fk_note_photo_note FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS note_comments (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  note_id BIGINT UNSIGNED NOT NULL,
+  user_id BIGINT UNSIGNED NOT NULL,
+  parent_id BIGINT UNSIGNED NULL,
+  body LONGTEXT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_note_comments_note FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
+  CONSTRAINT fk_note_comments_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_note_comments_parent FOREIGN KEY (parent_id) REFERENCES note_comments(id) ON DELETE CASCADE,
+  INDEX idx_note_created (note_id, created_at),
+  INDEX idx_note_parent (note_id, parent_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- IMPORTANT: sharing table uses column name `user_id`
 CREATE TABLE IF NOT EXISTS notes_shares (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

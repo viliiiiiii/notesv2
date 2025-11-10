@@ -1650,8 +1650,38 @@ function notes_can_share(array $note): bool {
 
 /* ---------- comments ---------- */
 
+function notes__ensure_comment_table(PDO $pdo): void {
+    static $attempted = false;
+    if ($attempted) {
+        return;
+    }
+    $attempted = true;
+    $sql = <<<SQL
+CREATE TABLE IF NOT EXISTS note_comments (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  note_id BIGINT UNSIGNED NOT NULL,
+  user_id BIGINT UNSIGNED NOT NULL,
+  parent_id BIGINT UNSIGNED NULL,
+  body LONGTEXT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_note_comments_note FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
+  CONSTRAINT fk_note_comments_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_note_comments_parent FOREIGN KEY (parent_id) REFERENCES note_comments(id) ON DELETE CASCADE,
+  INDEX idx_note_created (note_id, created_at),
+  INDEX idx_note_parent (note_id, parent_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+SQL;
+    try {
+        $pdo->exec($sql);
+    } catch (Throwable $e) {
+        error_log('notes: unable to ensure note_comments table: ' . $e->getMessage());
+    }
+}
+
 function notes_comments_table_exists(?PDO $pdo = null): bool {
     $pdo = $pdo ?: get_pdo();
+    notes__ensure_comment_table($pdo);
     return notes__table_exists($pdo, 'note_comments');
 }
 
