@@ -521,6 +521,86 @@ include __DIR__ . '/../includes/header.php';
         </div>
       </section>
 
+        <form method="post" class="obsidian-comment-form obsidian-comment-form--new">
+          <label>
+            <span class="obsidian-field-label">Add a reply</span>
+            <textarea name="body" rows="4" required><?php echo  sanitize($_POST['body'] ?? ''); ?></textarea>
+          </label>
+          <input type="hidden" name="<?php echo  CSRF_TOKEN_NAME; ?>" value="<?php echo  sanitize($csrfToken); ?>">
+          <div class="obsidian-comment-actions">
+            <button class="btn obsidian-primary" type="submit" name="add_comment" value="1">Post comment</button>
+          </div>
+        </form>
+      </section>
+      <?php else: ?>
+        <section class="obsidian-panel obsidian-panel--comments" id="comments">
+          <header class="obsidian-panel__header">
+            <h2>Discussion</h2>
+          </header>
+          <p class="obsidian-empty">Commenting is disabled for this installation.</p>
+        </section>
+      <?php endif; ?>
+    </div>
+
+    <aside class="obsidian-sidebar obsidian-sidebar--viewer">
+      <section class="obsidian-panel obsidian-panel--properties">
+        <header class="obsidian-panel__header">
+          <h2>Properties</h2>
+        </header>
+        <dl class="obsidian-properties">
+          <?php foreach ($propertyLabels as $key => $label):
+            $value = $properties[$key] ?? '';
+            if ($key === 'due_date' && $value) {
+                try {
+                    $dt = new DateTimeImmutable($value);
+                    $formatted = $dt->format('M j, Y');
+                    if ($dt < new DateTimeImmutable('today')) {
+                        $value = '<span class="obsidian-overdue">' . sanitize($formatted) . '</span>';
+                    } else {
+                        $value = sanitize($formatted);
+                    }
+                } catch (Throwable $e) {
+                    $value = sanitize($value);
+                }
+            } elseif ($key === 'priority' && $value !== '') {
+                $badge = notes_priority_badge_class($value);
+                $value = '<span class="badge ' . sanitize($badge) . '">' . sanitize($value) . '</span>';
+            } else {
+                $value = $value !== '' ? sanitize((string)$value) : '<span class="obsidian-muted">—</span>';
+            }
+          ?>
+          <div class="obsidian-properties__item">
+            <dt><?php echo  sanitize($label); ?></dt>
+            <dd><?php echo  $value; ?></dd>
+          </div>
+          <?php endforeach; ?>
+        </dl>
+      </section>
+
+      <section class="obsidian-panel obsidian-panel--details">
+        <header class="obsidian-panel__header">
+          <h2>Details</h2>
+        </header>
+        <div class="obsidian-detail-grid">
+          <div>
+            <span class="obsidian-field-label">Owner</span>
+            <span><?php echo  sanitize($ownerLabel); ?></span>
+          </div>
+          <div>
+            <span class="obsidian-field-label">Shared with</span>
+            <div class="obsidian-detail__shares" data-share-summary data-empty-text="Private">
+              <?php if ($shareDetails): ?>
+                <?php foreach ($shareDetails as $share): ?>
+                  <span class="obsidian-pill"><?php echo  sanitize($share['label']); ?></span>
+                <?php endforeach; ?>
+              <?php else: ?>
+                <span class="obsidian-muted" data-share-empty>Private</span>
+              <?php endif; ?>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section class="obsidian-panel obsidian-panel--attachments">
         <header class="obsidian-panel__header">
           <h2>Attachments</h2>
@@ -604,128 +684,646 @@ include __DIR__ . '/../includes/header.php';
 <?php endif; ?>
 
 <style>
-.obsidian-shell{position:relative;background:#fff;color:#0f172a;border-radius:20px;padding:1.4rem 1.6rem;margin-bottom:1.5rem;border:1px solid #e2e8f0;box-shadow:0 18px 40px rgba(15,23,42,.08);}
-.obsidian-header{display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap;}
-.obsidian-header__titles h1{margin:0;font-size:1.65rem;font-weight:700;color:#0f172a;}
-.obsidian-header__eyebrow{text-transform:uppercase;letter-spacing:.14em;font-size:.72rem;color:#64748b;margin-bottom:.2rem;display:block;}
-.obsidian-header__actions{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;}
-.btn.obsidian-primary{background:#2563eb;border:none;color:#fff;border-radius:999px;padding:.5rem 1.2rem;font-weight:600;box-shadow:0 10px 20px rgba(37,99,235,.18);cursor:pointer;}
-.btn.obsidian-btn{background:#e0e7ff;border:1px solid #c7d2fe;color:#1d4ed8;border-radius:999px;padding:.45rem .95rem;font-weight:500;cursor:pointer;transition:background .2s ease,border-color .2s ease,color .2s ease;}
-.btn.obsidian-btn--ghost{background:#fff;border:1px solid #cbd5f5;color:#1e293b;border-radius:999px;padding:.45rem .95rem;font-weight:500;cursor:pointer;transition:background .2s ease,border-color .2s ease,color .2s ease;}
-.btn.obsidian-btn--ghost.small{padding:.35rem .75rem;font-size:.8rem;}
-.btn.obsidian-btn:hover{background:#c7d2fe;border-color:#94a3ff;color:#1e3a8a;}
-.btn.obsidian-btn--ghost:hover{background:#f8fafc;border-color:#94a3b8;color:#0f172a;}
-.obsidian-layout{display:grid;gap:1.25rem;grid-template-columns:minmax(0,1fr) 300px;align-items:start;}
-.obsidian-sidebar{background:#f8fafc;border:1px solid #e2e8f0;border-radius:16px;padding:1.1rem;display:grid;gap:1.1rem;}
-.obsidian-main{background:#f8fafc;border:1px solid #e2e8f0;border-radius:16px;padding:1.1rem;display:grid;gap:1.25rem;}
-.obsidian-panel{background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:.95rem 1rem;display:grid;gap:.75rem;}
-.obsidian-panel__header{display:flex;justify-content:space-between;align-items:flex-start;gap:.6rem;flex-wrap:wrap;}
-.obsidian-panel__header h2{margin:0;font-size:1rem;color:#0f172a;}
-.obsidian-panel__hint{margin:.2rem 0 0;font-size:.82rem;color:#64748b;}
-.obsidian-detail{display:flex;gap:.9rem;align-items:flex-start;}
-.obsidian-detail__icon{width:52px;height:52px;border-radius:15px;background:#e0e7ff;display:grid;place-items:center;font-size:1.4rem;color:#1d4ed8;}
-.obsidian-detail__content{display:grid;gap:.55rem;}
-.obsidian-detail__meta{display:flex;gap:.45rem;flex-wrap:wrap;align-items:center;font-size:.82rem;color:#475569;}
-.obsidian-detail__shares{display:flex;gap:.3rem;flex-wrap:wrap;}
-.obsidian-detail__tags{display:flex;gap:.35rem;flex-wrap:wrap;}
-.obsidian-detail__count{background:#edf2f7;border-radius:999px;padding:.25rem .55rem;font-size:.75rem;color:#475569;font-weight:500;}
-.obsidian-status{display:inline-flex;align-items:center;border-radius:999px;padding:.25rem .55rem;font-size:.75rem;font-weight:600;}
-.obsidian-status--idea{background:#e0f2fe;color:#0369a1;}
-.obsidian-status--in_progress{background:#e0e7ff;color:#4338ca;}
-.obsidian-status--review{background:#ede9fe;color:#6d28d9;}
-.obsidian-status--blocked{background:#fef3c7;color:#b45309;}
-.obsidian-status--complete{background:#dcfce7;color:#047857;}
-.obsidian-status--archived{background:#e2e8f0;color:#475569;}
-.obsidian-pill{display:inline-flex;align-items:center;background:#e0e7ff;border-radius:999px;padding:.25rem .6rem;font-size:.75rem;color:#1d4ed8;font-weight:500;}
-.obsidian-pill.is-muted{background:#edf2f7;color:#64748b;}
-.obsidian-tag{display:inline-flex;align-items:center;gap:.3rem;background:#e0e7ff;border-radius:999px;padding:.25rem .6rem;font-size:.75rem;color:#1d4ed8;}
-.obsidian-tag::before{content:'';width:8px;height:8px;border-radius:50%;background:var(--tag-color,#6366f1);}
-.obsidian-reader{background:#fff;border:1px solid #e2e8f0;border-radius:18px;padding:1.15rem;display:grid;gap:1.1rem;}
-.obsidian-blocks{display:grid;gap:1rem;}
-.obsidian-block__heading{margin:0;color:#0f172a;}
-.obsidian-block__heading--h1{font-size:1.6rem;}
-.obsidian-block__heading--h2{font-size:1.35rem;}
-.obsidian-block__heading--h3{font-size:1.15rem;}
-.obsidian-block__text{margin:0;color:#1f2937;font-size:1rem;line-height:1.65;}
-.obsidian-block__todo{display:flex;gap:.55rem;align-items:flex-start;color:#1f2937;font-size:.98rem;line-height:1.55;}
-.obsidian-block__todo input{margin-top:.25rem;width:1rem;height:1rem;}
-.obsidian-block__list{margin:0;padding-left:1.25rem;display:grid;gap:.4rem;color:#1f2937;line-height:1.6;}
-.obsidian-block__quote{margin:0;padding:.9rem 1.1rem;border-left:3px solid #2563eb;background:#eff6ff;border-radius:0 .85rem .85rem 0;color:#1e3a8a;}
-.obsidian-block__callout{display:flex;gap:.75rem;padding:.9rem;background:#f8fafc;border:1px solid #e2e8f0;border-left:4px solid var(--callout-accent,#2563eb);border-radius:12px;color:#1f2937;}
-.obsidian-block__callout-icon{font-size:1.25rem;}
-.obsidian-block__divider{height:2px;background:linear-gradient(90deg,#cbd5f5,#e2e8f0);border-radius:999px;}
-.obsidian-empty{margin:0;color:#64748b;}
-.obsidian-properties{margin:0;padding:0;display:grid;gap:.7rem;}
-.obsidian-properties__item{display:grid;gap:.3rem;}
-.obsidian-properties__item dt{font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:#64748b;}
-.obsidian-properties__item dd{margin:0;font-size:.92rem;color:#0f172a;}
-.obsidian-field-label{font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:#64748b;display:block;margin-bottom:.3rem;}
-.obsidian-detail-grid{display:grid;gap:.65rem;}
-.obsidian-muted{color:#64748b;}
-.obsidian-overdue{color:#b91c1c;font-weight:600;}
-.badge{display:inline-flex;align-items:center;gap:.25rem;padding:.25rem .55rem;border-radius:999px;font-size:.7rem;font-weight:600;}
-.badge--muted{background:#e2e8f0;color:#475569;}
-.badge--blue{background:#dbeafe;color:#1d4ed8;}
-.badge--indigo{background:#e0e7ff;color:#4338ca;}
-.badge--purple{background:#ede9fe;color:#7c3aed;}
-.badge--orange{background:#fef3c7;color:#b45309;}
-.badge--green{background:#dcfce7;color:#047857;}
-.badge--slate{background:#f1f5f9;color:#475569;}
-.badge--danger{background:#fee2e2;color:#b91c1c;}
-.badge--amber{background:#fef3c7;color:#92400e;}
-.badge--teal{background:#ccfbf1;color:#0f766e;}
-.obsidian-attachments{display:grid;gap:.55rem;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));}
-.obsidian-attachment{display:block;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;background:#fff;}
-.obsidian-attachment img{width:100%;height:100%;object-fit:cover;aspect-ratio:4/3;}
-.obsidian-attachment--empty{display:grid;place-items:center;min-height:110px;color:#94a3b8;background:#f8fafc;border:1px dashed #cbd5f5;}
-.obsidian-comments{display:grid;gap:.85rem;}
-.obsidian-comment{border:1px solid #e2e8f0;border-radius:12px;padding:.85rem 1rem;background:#fff;display:grid;gap:.65rem;box-shadow:0 10px 24px rgba(15,23,42,.04);}
-.obsidian-comment__header{display:flex;justify-content:space-between;gap:.65rem;align-items:flex-start;flex-wrap:wrap;}
-.obsidian-comment__timestamp{display:block;font-size:.75rem;color:#94a3b8;margin-top:.15rem;}
-.obsidian-comment__body{white-space:pre-wrap;color:#1f2937;line-height:1.55;}
-.obsidian-comment__footer{display:flex;gap:.55rem;flex-wrap:wrap;align-items:flex-start;}
-.obsidian-comment__children{border-left:2px solid #e2e8f0;margin-left:.6rem;padding-left:.7rem;display:grid;gap:.65rem;}
-.obsidian-comment-form{display:grid;gap:.65rem;}
-.obsidian-comment-form textarea{width:100%;border-radius:.75rem;border:1px solid #cbd5f5;padding:.6rem .75rem;background:#fff;color:#0f172a;resize:vertical;font-size:.95rem;}
-.obsidian-comment-form--inline{margin-top:.45rem;}
-.obsidian-comment-form--inline[hidden]{display:none;}
-.obsidian-comment-actions{display:flex;gap:.5rem;flex-wrap:wrap;}
-.obsidian-photo-modal{position:fixed;inset:0;z-index:60;display:grid;place-items:center;padding:1.5rem;background:rgba(15,23,42,.25);backdrop-filter:blur(8px);transition:opacity .2s ease;}
-.obsidian-photo-modal.hidden{opacity:0;pointer-events:none;}
-.obsidian-photo-modal__overlay{position:absolute;inset:0;}
-.obsidian-photo-modal__dialog{position:relative;z-index:1;width:min(960px,100%);background:#fff;border:1px solid #e2e8f0;border-radius:18px;display:grid;gap:0;box-shadow:0 26px 52px rgba(15,23,42,.12);}
-.obsidian-photo-modal__header{display:flex;justify-content:space-between;align-items:center;padding:.9rem 1.1rem;border-bottom:1px solid #e2e8f0;}
-.obsidian-photo-modal__header h3{margin:0;color:#0f172a;font-size:1.05rem;}
-.obsidian-photo-modal__close{background:none;border:none;color:#64748b;font-size:1.6rem;cursor:pointer;}
-.obsidian-photo-modal__body{padding:.9rem;max-height:70vh;overflow:auto;display:grid;gap:.65rem;}
-.obsidian-photo-modal__body a{display:block;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;background:#fff;}
-.obsidian-photo-modal__body img{width:100%;height:100%;object-fit:cover;}
-.obsidian-modal{position:fixed;inset:0;z-index:70;display:grid;place-items:center;padding:1.5rem;background:rgba(15,23,42,.25);backdrop-filter:blur(6px);transition:opacity .2s ease;}
-.obsidian-modal.hidden{opacity:0;pointer-events:none;}
-.obsidian-modal__overlay{position:absolute;inset:0;}
-.obsidian-modal__dialog{position:relative;z-index:1;width:min(520px,100%);background:#fff;border:1px solid #e2e8f0;border-radius:16px;display:grid;gap:.6rem;box-shadow:0 22px 44px rgba(15,23,42,.12);}
-.obsidian-modal__dialog--share{padding:0;}
-.obsidian-modal__header{display:flex;justify-content:space-between;align-items:flex-start;padding:.9rem 1.05rem;border-bottom:1px solid #e2e8f0;gap:.6rem;flex-wrap:wrap;}
-.obsidian-modal__header h3{margin:0;color:#0f172a;font-size:1.05rem;}
-.obsidian-modal__subtitle{margin:.2rem 0 0;color:#475569;font-size:.85rem;}
-.obsidian-modal__close{background:none;border:none;color:#64748b;font-size:1.4rem;cursor:pointer;}
-.obsidian-modal__form{display:grid;gap:0;}
-.obsidian-modal__body{padding:.9rem 1.05rem;display:grid;gap:.75rem;max-height:340px;overflow:auto;}
-.obsidian-modal__search input{width:100%;background:#fff;border:1px solid #cbd5f5;border-radius:.75rem;padding:.55rem .75rem;color:#0f172a;font-size:.95rem;}
-.obsidian-modal__options{display:grid;gap:.55rem;}
-.obsidian-modal__option{display:flex;gap:.55rem;align-items:center;padding:.55rem .75rem;background:#f8fafc;border:1px solid #e2e8f0;border-radius:.75rem;cursor:pointer;transition:border-color .2s ease,background .2s ease;}
-.obsidian-modal__option:hover{border-color:#2563eb;}
-.obsidian-modal__option input{width:1rem;height:1rem;}
-.obsidian-modal__badge{margin-left:auto;font-size:.72rem;color:#64748b;background:#edf2f7;border-radius:999px;padding:.2rem .5rem;}
-.obsidian-modal__empty{margin:0;font-size:.8rem;color:#64748b;}
-.obsidian-modal__footer{padding:.85rem 1.05rem;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;gap:.6rem;flex-wrap:wrap;}
-.obsidian-modal__status{font-size:.8rem;color:#64748b;min-height:1.1rem;}
-.obsidian-modal__status.is-error{color:#b91c1c;}
-.flash{border-radius:10px;padding:.75rem .95rem;margin-bottom:1rem;font-weight:500;}
-.flash-error{background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;}
-.visually-hidden{position:absolute !important;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0;}
-@media (max-width:1080px){.obsidian-layout{grid-template-columns:minmax(0,1fr);} .obsidian-sidebar,.obsidian-main{grid-column:1 / -1;}}
-@media (max-width:720px){.obsidian-shell{padding:1.25rem;} .obsidian-header__titles h1{font-size:1.45rem;} .obsidian-detail{flex-direction:column;align-items:flex-start;} .obsidian-detail__icon{width:46px;height:46px;font-size:1.2rem;} }
+:root[data-theme="obsidian"] {
+  color-scheme: only light;
+  --surface-bg: #f6f7fb;
+  --surface-panel: #ffffff;
+  --surface-border: #e2e8f0;
+  --surface-accent: #2563eb;
+  --surface-accent-soft: #eff6ff;
+  --surface-muted: #94a3b8;
+  --surface-strong: #0f172a;
+  --surface-shadow: rgba(15, 23, 42, 0.08);
+}
+
+.obsidian-shell {
+  background: var(--surface-bg);
+  border-radius: 28px;
+  padding: 1.8rem;
+  border: 1px solid rgba(148,163,184,0.2);
+  box-shadow: 0 34px 68px var(--surface-shadow);
+  margin-bottom: 2rem;
+}
+
+.obsidian-header {
+  background: var(--surface-panel);
+  border-radius: 22px;
+  border: 1px solid var(--surface-border);
+  padding: 1.3rem 1.5rem;
+  display: flex;
+  justify-content: space-between;
+  gap: 1.2rem;
+  align-items: center;
+  box-shadow: 0 24px 52px var(--surface-shadow);
+}
+
+.obsidian-header__titles {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.obsidian-header__eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.72rem;
+  color: var(--surface-muted);
+}
+
+.obsidian-detail {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.obsidian-detail__icon {
+  width: 60px;
+  height: 60px;
+  border-radius: 18px;
+  background: rgba(37,99,235,0.15);
+  display: grid;
+  place-items: center;
+  font-size: 1.6rem;
+  color: var(--surface-accent);
+}
+
+.obsidian-detail__content {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.obsidian-detail__meta {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  font-size: 0.82rem;
+  color: var(--surface-muted);
+}
+
+.obsidian-detail__meta time,
+.obsidian-detail__count {
+  background: rgba(226,232,240,0.9);
+  border-radius: 999px;
+  padding: 0.25rem 0.6rem;
+  color: var(--surface-strong);
+  font-weight: 500;
+}
+
+.obsidian-status {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.25rem 0.65rem;
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
+.obsidian-status--idea { background: #dbeafe; color: #1d4ed8; }
+.obsidian-status--in_progress { background: #e0e7ff; color: #4338ca; }
+.obsidian-status--review { background: #ede9fe; color: #6d28d9; }
+.obsidian-status--blocked { background: #fef3c7; color: #b45309; }
+.obsidian-status--complete { background: #dcfce7; color: #047857; }
+.obsidian-status--archived { background: #f1f5f9; color: #475569; }
+
+.obsidian-detail__shares,
+.obsidian-detail__tags {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.obsidian-pill {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(226,232,240,0.9);
+  border-radius: 999px;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.72rem;
+  color: var(--surface-strong);
+}
+
+.obsidian-pill.is-muted {
+  background: rgba(148,163,184,0.2);
+  color: var(--surface-muted);
+}
+
+.obsidian-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: rgba(37,99,235,0.12);
+  border-radius: 999px;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.72rem;
+  color: var(--surface-accent);
+}
+
+.obsidian-tag::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tag-color, var(--surface-accent));
+}
+
+.obsidian-header__actions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.obsidian-header__actions .btn {
+  border-radius: 999px;
+  padding: 0.5rem 1.1rem;
+  font-weight: 600;
+  font-size: 0.9rem;
+  border: 1px solid transparent;
+  cursor: pointer;
+  text-decoration: none;
+  transition: transform 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.obsidian-btn--ghost {
+  background: #fff;
+  border-color: rgba(148,163,184,0.45);
+  color: var(--surface-strong);
+}
+
+.obsidian-btn--ghost:hover {
+  border-color: var(--surface-accent);
+  color: var(--surface-accent);
+}
+
+.obsidian-btn {
+  background: rgba(37,99,235,0.12);
+  color: var(--surface-accent);
+}
+
+.obsidian-primary {
+  background: var(--surface-accent);
+  color: #fff;
+  box-shadow: 0 18px 38px rgba(37,99,235,0.26);
+}
+
+.obsidian-header__actions .btn:hover {
+  transform: translateY(-1px);
+}
+
+.obsidian-layout {
+  margin-top: 1.2rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 1.4rem;
+}
+
+.obsidian-main {
+  background: var(--surface-panel);
+  border-radius: 20px;
+  border: 1px solid var(--surface-border);
+  padding: 1.3rem;
+  box-shadow: 0 20px 42px var(--surface-shadow);
+  display: grid;
+  gap: 1.2rem;
+}
+
+.obsidian-reader {
+  background: rgba(248,250,252,0.95);
+  border-radius: 18px;
+  border: 1px solid rgba(226,232,240,0.9);
+  padding: 1.2rem 1.3rem;
+  display: grid;
+  gap: 1.1rem;
+}
+
+.obsidian-blocks {
+  display: grid;
+  gap: 1.05rem;
+}
+
+.obsidian-block {
+  display: grid;
+  gap: 0.75rem;
+  font-size: 1rem;
+  color: rgba(15,23,42,0.9);
+  line-height: 1.65;
+}
+
+.obsidian-block__heading--h1 { font-size: 1.6rem; color: var(--surface-strong); }
+.obsidian-block__heading--h2 { font-size: 1.35rem; color: var(--surface-strong); }
+.obsidian-block__heading--h3 { font-size: 1.15rem; color: var(--surface-strong); }
+
+.obsidian-block__text,
+.obsidian-block__todo,
+.obsidian-block__list {
+  margin: 0;
+}
+
+.obsidian-block__todo {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+}
+
+.obsidian-block__todo input {
+  margin-top: 0.25rem;
+  width: 1rem;
+  height: 1rem;
+}
+
+.obsidian-block__list {
+  padding-left: 1.35rem;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.obsidian-block__quote {
+  margin: 0;
+  padding: 1rem 1.2rem;
+  background: var(--surface-accent-soft);
+  border-left: 4px solid var(--surface-accent);
+  border-radius: 0 14px 14px 0;
+  color: #1d4ed8;
+}
+
+.obsidian-block__callout {
+  display: flex;
+  gap: 0.85rem;
+  padding: 1rem;
+  background: rgba(248,250,252,0.92);
+  border: 1px solid rgba(226,232,240,0.9);
+  border-left: 4px solid var(--callout-accent, var(--surface-accent));
+  border-radius: 16px;
+}
+
+.obsidian-block__divider {
+  height: 2px;
+  background: linear-gradient(90deg, rgba(203,213,225,0.8), rgba(226,232,240,0.8));
+  border-radius: 999px;
+}
+
+.obsidian-sidebar {
+  background: var(--surface-panel);
+  border-radius: 20px;
+  border: 1px solid var(--surface-border);
+  padding: 1.2rem;
+  box-shadow: 0 20px 42px var(--surface-shadow);
+  display: grid;
+  gap: 1.1rem;
+}
+
+.obsidian-panel {
+  background: rgba(248,250,252,0.95);
+  border-radius: 18px;
+  border: 1px solid rgba(226,232,240,0.9);
+  padding: 1.05rem 1.1rem;
+  display: grid;
+  gap: 0.8rem;
+}
+
+.obsidian-panel__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.obsidian-panel__header h2 {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--surface-strong);
+}
+
+.obsidian-panel__hint {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--surface-muted);
+}
+
+.obsidian-properties {
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.obsidian-properties__item {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.obsidian-properties__item dt {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--surface-muted);
+}
+
+.obsidian-properties__item dd {
+  margin: 0;
+  font-size: 0.92rem;
+  color: var(--surface-strong);
+}
+
+.obsidian-detail-grid {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.obsidian-muted { color: var(--surface-muted); }
+.obsidian-overdue { color: #b91c1c; font-weight: 600; }
+
+.obsidian-attachments {
+  display: grid;
+  gap: 0.6rem;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+}
+
+.obsidian-attachment {
+  display: block;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(226,232,240,0.9);
+  background: #fff;
+  box-shadow: 0 12px 28px rgba(15,23,42,0.06);
+}
+
+.obsidian-attachment img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  aspect-ratio: 4 / 3;
+}
+
+.obsidian-attachment--empty {
+  display: grid;
+  place-items: center;
+  min-height: 120px;
+  color: var(--surface-muted);
+  background: rgba(248,250,252,0.9);
+  border: 1px dashed rgba(148,163,184,0.4);
+}
+
+.obsidian-comments {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.obsidian-comment {
+  background: #fff;
+  border: 1px solid rgba(226,232,240,0.9);
+  border-radius: 14px;
+  padding: 0.9rem 1rem;
+  display: grid;
+  gap: 0.75rem;
+  box-shadow: 0 16px 36px rgba(15,23,42,0.08);
+}
+
+.obsidian-comment__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.obsidian-comment__timestamp {
+  font-size: 0.75rem;
+  color: var(--surface-muted);
+}
+
+.obsidian-comment__body {
+  white-space: pre-wrap;
+  color: rgba(15,23,42,0.88);
+  line-height: 1.6;
+}
+
+.obsidian-comment__footer {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.obsidian-comment__children {
+  border-left: 2px solid rgba(226,232,240,0.9);
+  margin-left: 0.7rem;
+  padding-left: 0.7rem;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.obsidian-comment-form {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.obsidian-comment-form textarea {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid rgba(148,163,184,0.45);
+  padding: 0.6rem 0.85rem;
+  font-size: 0.95rem;
+  color: var(--surface-strong);
+  resize: vertical;
+}
+
+.obsidian-comment-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.obsidian-empty {
+  margin: 0;
+  color: var(--surface-muted);
+  text-align: center;
+}
+
+.obsidian-photo-modal,
+.obsidian-modal,
+.share-modal {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+  background: rgba(15,23,42,0.3);
+  backdrop-filter: blur(6px);
+  transition: opacity 0.2s ease;
+  z-index: 70;
+}
+
+.obsidian-photo-modal.hidden,
+.obsidian-modal.hidden,
+.share-modal.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.obsidian-photo-modal__overlay,
+.obsidian-modal__overlay,
+.share-modal__overlay {
+  position: absolute;
+  inset: 0;
+}
+
+.obsidian-photo-modal__dialog {
+  position: relative;
+  z-index: 1;
+  width: min(960px, 100%);
+  background: #fff;
+  border-radius: 20px;
+  border: 1px solid rgba(226,232,240,0.9);
+  box-shadow: 0 48px 98px rgba(15,23,42,0.18);
+  display: grid;
+  gap: 0;
+}
+
+.obsidian-photo-modal__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.1rem;
+  border-bottom: 1px solid rgba(226,232,240,0.9);
+}
+
+.obsidian-photo-modal__close {
+  background: none;
+  border: none;
+  color: var(--surface-muted);
+  font-size: 1.6rem;
+  cursor: pointer;
+}
+
+.obsidian-photo-modal__body {
+  padding: 1rem;
+  max-height: 70vh;
+  overflow: auto;
+  display: grid;
+  gap: 0.7rem;
+}
+
+.obsidian-modal__dialog {
+  position: relative;
+  z-index: 1;
+  width: min(520px, 100%);
+  background: #fff;
+  border-radius: 22px;
+  border: 1px solid rgba(226,232,240,0.9);
+  box-shadow: 0 44px 92px rgba(15,23,42,0.2);
+  padding: 1.3rem;
+  display: grid;
+  gap: 0.9rem;
+}
+
+.share-modal__dialog {
+  position: relative;
+  z-index: 1;
+  width: min(480px, 100%);
+  background: #fff;
+  border-radius: 22px;
+  border: 1px solid rgba(226,232,240,0.9);
+  box-shadow: 0 44px 92px rgba(15,23,42,0.18);
+  padding: 1.3rem;
+  display: grid;
+  gap: 0.85rem;
+}
+
+.share-modal__header,
+.obsidian-modal__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.7rem;
+}
+
+.share-modal__subtitle,
+.obsidian-modal__subtitle {
+  margin: 0.2rem 0 0;
+  color: var(--surface-muted);
+  font-size: 0.82rem;
+}
+
+.share-modal__close,
+.obsidian-modal__close {
+  background: rgba(226,232,240,0.8);
+  border: none;
+  border-radius: 50%;
+  width: 34px;
+  height: 34px;
+  font-size: 1.15rem;
+  cursor: pointer;
+}
+
+.share-modal__form,
+.obsidian-modal__form {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.share-modal__body,
+.obsidian-modal__body {
+  display: grid;
+  gap: 0.55rem;
+  max-height: 320px;
+  overflow: auto;
+  border-radius: 12px;
+  border: 1px solid rgba(226,232,240,0.85);
+  padding: 0.6rem;
+}
+
+.share-modal__option,
+.obsidian-modal__option {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  background: rgba(248,250,252,0.95);
+  border-radius: 10px;
+  padding: 0.5rem 0.65rem;
+  font-size: 0.85rem;
+  color: var(--surface-strong);
+}
+
+.share-modal__footer,
+.obsidian-modal__footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.share-modal__status,
+.obsidian-modal__status {
+  font-size: 0.78rem;
+  color: var(--surface-muted);
+}
+
+.share-modal__status.is-error,
+.obsidian-modal__status.is-error {
+  color: #b91c1c;
+}
+
+@media (max-width: 1080px) {
+  .obsidian-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .obsidian-sidebar {
+    order: -1;
+  }
+}
+
+@media (max-width: 720px) {
+  .obsidian-shell {
+    padding: 1.2rem;
+  }
+  .obsidian-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .obsidian-detail {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
 </style>
 
 <script>

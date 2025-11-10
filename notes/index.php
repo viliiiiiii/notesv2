@@ -304,7 +304,7 @@ $hasNoteDate    = notes__col_exists($pdo, 'notes', 'note_date');
 $hasCreatedAt   = notes__col_exists($pdo, 'notes', 'created_at');
 $hasUpdatedAt   = notes__col_exists($pdo, 'notes', 'updated_at');
 $hasPhotosTbl   = notes__table_exists($pdo, 'note_photos');
-$hasCommentsTbl = notes__table_exists($pdo, 'note_comments');
+$hasCommentsTbl = notes_comments_table_exists($pdo);
 $hasMetaTbl     = notes__table_exists($pdo, 'note_pages_meta');
 $hasTagTbl      = notes__table_exists($pdo, 'note_tag_assignments') && notes__table_exists($pdo, 'note_tags_catalog');
 
@@ -315,6 +315,14 @@ $statusParam = trim((string)($_GET['status'] ?? ''));
 $tagFilter   = trim((string)($_GET['tag'] ?? ''));
 
 $statuses = notes_available_statuses();
+$statusIcons = [
+    'idea'        => '💡',
+    'in_progress' => '⚙️',
+    'review'      => '📝',
+    'blocked'     => '⛔️',
+    'complete'    => '✅',
+    'archived'    => '🗃️',
+];
 $statusFilter = '';
 if ($statusParam !== '') {
     $candidateKey = strtolower(str_replace([' ', '-'], '_', $statusParam));
@@ -552,6 +560,7 @@ foreach ($rows as &$row) {
         'photoCount'    => (int)($row['photo_count'] ?? 0),
         'commentCount'  => (int)($row['comment_count'] ?? 0),
         'noteDate'      => $row['note_date'] ?? null,
+        'noteDateFormatted' => notes__format_date($row['note_date'] ?? ''),
         'updatedRelative'=> $row['_updated_relative'],
         'updatedAbsolute'=> $row['_updated_absolute'],
         'canShare'      => $row['_can_share'],
@@ -574,61 +583,20 @@ foreach ($rows as $candidate) {
 if ($activeNote === null && $rows) {
     $activeNote = $rows[0];
 }
-if ($activeNote === null && $rows) {
-    $activeNote = $rows[0];
-}
 
-$totalNotes       = count($rows);
-$ownedCount       = 0;
-$sharedCount      = 0;
-$photoRichCount   = 0;
-$commentRichCount = 0;
-$photoTotal       = 0;
-$latestTimestamp  = null;
-$statusCounts     = array_fill_keys(array_keys($statuses), 0);
-
-foreach ($rows as $row) {
-    $isOwner  = !empty($row['is_owner']);
-    $isShared = !empty($row['is_shared']) && !$isOwner;
-    if ($isOwner) {
-        $ownedCount++;
-    }
-    if ($isShared) {
-        $sharedCount++;
-    }
-    $pc = (int)($row['photo_count'] ?? 0);
-    $cc = (int)($row['comment_count'] ?? 0);
-    if ($pc > 0) {
-        $photoRichCount++;
-    }
-    if ($cc > 0) {
-        $commentRichCount++;
-    }
-    $photoTotal += $pc;
-
-    $status = $row['_status'] ?? NOTES_DEFAULT_STATUS;
-    if (!isset($statusCounts[$status])) {
-        $statusCounts[$status] = 0;
-    }
-    $statusCounts[$status]++;
-
-    $candidateTimestamp = $row['updated_at'] ?? $row['created_at'] ?? $row['note_date'] ?? null;
-    if ($candidateTimestamp !== null) {
-        if ($latestTimestamp === null || strcmp((string)$candidateTimestamp, (string)$latestTimestamp) > 0) {
-            $latestTimestamp = (string)$candidateTimestamp;
+$activeNoteComments = [];
+$activeNotePhotos   = [];
+if ($activeNote) {
+    $activeNoteId = (int)($activeNote['id'] ?? 0);
+    if ($activeNoteId > 0) {
+        if ($hasCommentsTbl) {
+            $activeNoteComments = notes_fetch_comment_threads($activeNoteId);
+        }
+        if ($hasPhotosTbl) {
+            $activeNotePhotos = notes_fetch_photos($activeNoteId);
         }
     }
 }
-
-$avgPhotos        = $totalNotes > 0 ? $photoTotal / $totalNotes : 0.0;
-$avgPhotosRounded = $avgPhotos > 0 ? round($avgPhotos, 1) : 0.0;
-$percentOwned     = $totalNotes > 0 ? round(($ownedCount / $totalNotes) * 100) : 0;
-$percentShared    = $totalNotes > 0 ? round(($sharedCount / $totalNotes) * 100) : 0;
-$activeCount      = $totalNotes - ($statusCounts['archived'] ?? 0);
-$completedCount   = $statusCounts['complete'] ?? 0;
-$inProgressCount  = $statusCounts['in_progress'] ?? 0;
-$reviewCount      = $statusCounts['review'] ?? 0;
-$blockedCount     = $statusCounts['blocked'] ?? 0;
 
 $totalNotes       = count($rows);
 $ownedCount       = 0;
@@ -704,6 +672,36 @@ foreach ($rows as $row) {
     $statusColumns[$slug][] = $row;
 }
 
+$tagDirectory = [];
+foreach ($rows as $row) {
+    $tagList = $row['_tags'] ?? [];
+    if (!$tagList) {
+        continue;
+    }
+    foreach ($tagList as $tag) {
+        $label = trim((string)($tag['label'] ?? ''));
+        if ($label === '') {
+            continue;
+        }
+        if (!isset($tagDirectory[$label])) {
+            $tagDirectory[$label] = [
+                'label' => $label,
+                'color' => (string)($tag['color'] ?? ''),
+                'count' => 0,
+            ];
+        }
+        $tagDirectory[$label]['count']++;
+        if (!empty($tag['color'])) {
+            $tagDirectory[$label]['color'] = (string)$tag['color'];
+        }
+    }
+}
+if ($tagDirectory) {
+    uasort($tagDirectory, static function ($a, $b) {
+        return strcasecmp($a['label'], $b['label']);
+    });
+}
+
 $tagOptions = notes_all_tag_options();
 $lastUpdateHint = $lastUpdatedRelative !== ''
     ? 'Updated ' . $lastUpdatedRelative
@@ -772,18 +770,72 @@ include __DIR__ . '/../includes/header.php';
 
 
 <section class="obsidian-shell" data-theme="obsidian" data-index-shell data-csrf="<?php echo  sanitize($csrfToken); ?>">
-  <header class="obsidian-header">
-    <div class="obsidian-header__titles">
-      <span class="obsidian-header__eyebrow">Vault overview</span>
-      <h1>Notes workspace</h1>
-    </div>
-    <div class="obsidian-header__actions">
-      <button type="button" class="obsidian-header__command" data-command-open>⌘K Command palette</button>
-      <button type="button" class="obsidian-header__quick" data-quick-open>Quick capture</button>
-      <a class="btn obsidian-header__new" href="new.php">New note</a>
-    </div>
-  </header>
-  <div class="obsidian-layout">
+  <div class="amanote-grid">
+    <aside class="amanote-rail">
+      <div class="amanote-rail__brand">
+        <span class="amanote-rail__glyph">🧠</span>
+        <div>
+          <strong>Amanote hub</strong>
+          <small>Study spaces</small>
+        </div>
+      </div>
+      <nav class="amanote-rail__statuses">
+        <?php foreach ($statuses as $slug => $label): ?>
+          <?php $count = count($statusColumns[$slug] ?? []); ?>
+          <?php $isActive = $statusFilter === $slug; ?>
+          <?php $statusUrl = 'index.php?status=' . urlencode($slug); ?>
+          <a class="amanote-rail__status<?php echo  $isActive ? ' is-active' : ''; ?>" href="<?php echo  $isActive ? 'index.php' : sanitize($statusUrl); ?>">
+            <span class="amanote-rail__icon"><?php echo  sanitize($statusIcons[$slug] ?? '📌'); ?></span>
+            <div>
+              <strong><?php echo  sanitize($label); ?></strong>
+              <small><?php echo  number_format($count); ?> notes</small>
+            </div>
+          </a>
+        <?php endforeach; ?>
+      </nav>
+      <div class="amanote-rail__tags">
+        <div class="amanote-rail__tags-head">
+          <h3>Spaces</h3>
+          <?php if ($tagFilter !== ''): ?>
+            <a class="amanote-rail__clear" href="index.php">Clear</a>
+          <?php endif; ?>
+        </div>
+        <?php if ($tagDirectory): ?>
+          <ul>
+            <?php foreach ($tagDirectory as $tag): ?>
+              <?php $tagLabel = (string)($tag['label'] ?? ''); ?>
+              <?php $tagColor = (string)($tag['color'] ?? ''); ?>
+              <?php $tagCount = (int)($tag['count'] ?? 0); ?>
+              <?php $tagUrl = 'index.php?tag=' . urlencode($tagLabel); ?>
+              <li>
+                <a class="amanote-rail__tag<?php echo  $tagFilter === $tagLabel ? ' is-active' : ''; ?>" href="<?php echo  sanitize($tagUrl); ?>">
+                  <span class="amanote-rail__dot" style="--tag-color: <?php echo  sanitize($tagColor ?: '#2563eb'); ?>"></span>
+                  <span><?php echo  sanitize($tagLabel); ?></span>
+                  <small><?php echo  number_format($tagCount); ?></small>
+                </a>
+              </li>
+            <?php endforeach; ?>
+          </ul>
+        <?php else: ?>
+          <p class="amanote-rail__empty">Tag your notes to build quick navigation.</p>
+        <?php endif; ?>
+      </div>
+      <button type="button" class="amanote-rail__quick" data-quick-open>+ Quick note</button>
+    </aside>
+    <div class="amanote-main">
+      <header class="obsidian-header">
+        <div class="obsidian-header__titles">
+          <span class="obsidian-header__eyebrow">Lecture notebook</span>
+          <h1>Amanote workspace</h1>
+          <p class="obsidian-header__subtitle">Capture slides, annotate highlights, and collaborate with your team.</p>
+        </div>
+        <div class="obsidian-header__actions">
+          <button type="button" class="obsidian-header__command" data-command-open>⌘K Command palette</button>
+          <button type="button" class="obsidian-header__quick" data-quick-open>Quick capture</button>
+          <a class="btn obsidian-header__new" href="new.php">New note</a>
+        </div>
+      </header>
+      <div class="obsidian-layout">
     <aside class="obsidian-sidebar">
       <form method="get" action="index.php" class="obsidian-search" autocomplete="off">
         <label class="obsidian-search__field">
@@ -1031,6 +1083,8 @@ include __DIR__ . '/../includes/header.php';
         </div>
       <?php endif; ?>
     </aside>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -1170,118 +1224,1103 @@ include __DIR__ . '/../includes/header.php';
 </div>
 
 <style>
-.obsidian-shell{position:relative;background:#fff;color:#0f172a;border-radius:18px;padding:1.2rem 1.4rem;margin-bottom:1.35rem;border:1px solid #e2e8f0;box-shadow:0 14px 32px rgba(15,23,42,.08);}
-.obsidian-header{display:flex;justify-content:space-between;align-items:center;gap:.9rem;margin-bottom:1.3rem;flex-wrap:wrap;}
-.obsidian-header__titles h1{margin:0;font-size:1.58rem;font-weight:700;color:#0f172a;}
-.obsidian-header__eyebrow{text-transform:uppercase;letter-spacing:.14em;font-size:.72rem;color:#64748b;display:block;margin-bottom:.2rem;}
-.obsidian-header__actions{display:flex;gap:.55rem;align-items:center;flex-wrap:wrap;}
-.obsidian-header__command{background:#edf2f7;border:1px solid #cbd5f5;color:#1e293b;border-radius:999px;padding:.45rem 1rem;font-size:.88rem;cursor:pointer;transition:.2s ease;}
-.obsidian-header__command:hover{background:#e2e8f0;}
-.obsidian-header__quick{background:#f8fafc;border:1px solid #cbd5f5;color:#2563eb;border-radius:999px;padding:.45rem .95rem;font-weight:500;font-size:.88rem;cursor:pointer;transition:.2s ease;}
-.obsidian-header__quick:hover{background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8;}
-.obsidian-header__new{background:#2563eb;color:#fff;border-radius:999px;padding:.5rem 1.2rem;font-weight:600;box-shadow:0 10px 22px rgba(37,99,235,.18);text-decoration:none;}
-.obsidian-layout{display:grid;gap:1.15rem;grid-template-columns:272px minmax(0,1fr) 312px;align-items:start;}
-.obsidian-sidebar{background:#f8fafc;border:1px solid #e2e8f0;border-radius:16px;padding:1rem;display:grid;gap:1rem;}
-.obsidian-main{background:#f8fafc;border:1px solid #e2e8f0;border-radius:16px;padding:1rem;min-height:480px;display:grid;gap:.95rem;}
-.obsidian-preview{background:#f8fafc;border:1px solid #e2e8f0;border-radius:16px;padding:1rem;min-height:480px;display:grid;}
-.obsidian-search{display:grid;gap:.8rem;background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:.85rem;}
-.obsidian-search__field{display:grid;gap:.35rem;font-size:.82rem;color:#475569;}
-.obsidian-search input{background:#fff;border:1px solid #cbd5f5;border-radius:.75rem;padding:.5rem .75rem;color:#0f172a;font-size:.93rem;}
-.obsidian-search__meta{display:flex;align-items:center;justify-content:space-between;gap:.6rem;flex-wrap:wrap;color:#64748b;font-size:.78rem;}
-.obsidian-search__hint{display:flex;align-items:center;gap:.3rem;}
-.obsidian-search__hint kbd{background:#e2e8f0;border-radius:6px;padding:.1rem .35rem;font-family:'JetBrains Mono',monospace;font-size:.72rem;color:#1e293b;}
-.obsidian-search__meta-actions{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap;}
-.obsidian-search__chip{background:#e0f2fe;color:#0369a1;border-radius:999px;padding:.2rem .55rem;font-size:.72rem;font-weight:500;}
-.obsidian-search__reset{color:#2563eb;text-decoration:none;border-bottom:1px solid transparent;transition:border-color .2s ease,color .2s ease;}
-.obsidian-search__reset:hover{color:#1d4ed8;border-color:#1d4ed8;}
-.obsidian-btn{background:#e0e7ff;border:1px solid #c7d2fe;color:#1d4ed8;border-radius:999px;padding:.4rem 1rem;cursor:pointer;font-weight:500;transition:background .2s ease,border-color .2s ease,color .2s ease;}
-.obsidian-btn--ghost{background:#fff;border:1px solid #cbd5f5;color:#1e293b;border-radius:999px;padding:.4rem 1rem;cursor:pointer;font-weight:500;transition:background .2s ease,border-color .2s ease,color .2s ease;}
-.obsidian-primary{background:#2563eb;border:none;color:#fff;border-radius:999px;padding:.5rem 1.2rem;font-weight:600;box-shadow:0 10px 20px rgba(37,99,235,.18);cursor:pointer;}
-.obsidian-summary{display:grid;gap:.35rem;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:.8rem;font-size:.85rem;color:#475569;}
-.obsidian-summary span{color:#94a3b8;font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;display:block;}
-.obsidian-summary strong{color:#0f172a;font-size:.98rem;}
-.obsidian-statuses ul{list-style:none;margin:0;padding:0;display:grid;gap:.4rem;}
-.obsidian-statuses li{display:flex;justify-content:space-between;align-items:center;background:#fff;border-radius:10px;padding:.45rem .65rem;border:1px solid #e2e8f0;font-size:.85rem;color:#1f2937;}
-.obsidian-templates header h2{margin:0;font-size:1rem;color:#0f172a;}
-.obsidian-templates header p{margin:.25rem 0 0;color:#64748b;font-size:.82rem;}
-.obsidian-templates h3{margin:.6rem 0 .35rem;font-size:.78rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.1em;}
-.obsidian-template__empty{margin:0;font-size:.8rem;color:#94a3b8;}
-.obsidian-templates ul{list-style:none;margin:0;padding:0;display:grid;gap:.5rem;}
-.obsidian-template{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:.6rem .7rem;display:grid;gap:.45rem;}
-.obsidian-template--shared{background:#ecfeff;border-color:#99f6e4;}
-.obsidian-template__row{display:flex;justify-content:space-between;align-items:center;gap:.5rem;}
-.obsidian-template__apply{text-decoration:none;color:#0f172a;display:flex;gap:.55rem;align-items:center;}
-.obsidian-template__icon{width:30px;height:30px;border-radius:9px;background:#e0e7ff;display:grid;place-items:center;font-size:1rem;color:#1d4ed8;}
-.obsidian-template__apply strong{display:block;font-weight:600;color:#0f172a;}
-.obsidian-template__apply em{display:block;font-size:.74rem;color:#64748b;font-style:normal;}
-.obsidian-template__share{background:#e0e7ff;border:1px solid #c7d2fe;color:#1d4ed8;border-radius:999px;padding:.3rem .75rem;font-size:.75rem;cursor:pointer;}
-.obsidian-template__sharelist{display:flex;gap:.3rem;flex-wrap:wrap;}
-.badge{display:inline-flex;align-items:center;gap:.25rem;padding:.25rem .55rem;border-radius:999px;font-size:.7rem;font-weight:600;}
-.badge--muted{background:#e2e8f0;color:#475569;}
-.badge--blue{background:#dbeafe;color:#1d4ed8;}
-.badge--indigo{background:#e0e7ff;color:#4338ca;}
-.badge--purple{background:#ede9fe;color:#7c3aed;}
-.badge--orange{background:#fef3c7;color:#b45309;}
-.badge--green{background:#dcfce7;color:#047857;}
-.badge--slate{background:#f1f5f9;color:#475569;}
-.badge--danger{background:#fee2e2;color:#b91c1c;}
-.badge--amber{background:#fef3c7;color:#92400e;}
-.badge--teal{background:#ccfbf1;color:#0f766e;}
-.obsidian-note-list{display:grid;gap:.6rem;}
-.obsidian-note{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:.75rem .8rem;display:grid;gap:.55rem;cursor:pointer;transition:transform .15s ease,border-color .15s ease,box-shadow .15s ease;box-shadow:0 6px 16px rgba(15,23,42,.06);}
-.obsidian-note:hover{transform:translateY(-1px);border-color:#c7d2fe;box-shadow:0 10px 22px rgba(15,23,42,.08);}
-.obsidian-note.is-active{border-color:#2563eb;box-shadow:0 14px 28px rgba(37,99,235,.14);}
-.obsidian-note__header{display:flex;gap:.65rem;align-items:flex-start;justify-content:space-between;}
-.obsidian-note__icon{width:38px;height:38px;border-radius:10px;background:#e0e7ff;display:grid;place-items:center;font-size:1.1rem;color:#1d4ed8;}
-.obsidian-note__titles h3{margin:0;font-size:1.05rem;color:#0f172a;}
-.obsidian-note__meta{display:flex;gap:.35rem;align-items:center;font-size:.74rem;color:#64748b;flex-wrap:wrap;}
-.obsidian-note__timestamp{color:#475569;}
-.obsidian-note__shared{color:#0f766e;font-weight:600;}
-.obsidian-note__counts{display:flex;gap:.35rem;align-items:center;}
-.obsidian-note__pill{background:#edf2f7;border-radius:999px;padding:.2rem .55rem;font-size:.72rem;color:#475569;}
-.obsidian-note__excerpt{margin:0;font-size:.88rem;color:#1f2937;}
-.obsidian-note__tags{display:flex;gap:.35rem;flex-wrap:wrap;}
-.obsidian-tag{display:inline-flex;align-items:center;gap:.3rem;background:#e0e7ff;border-radius:999px;padding:.18rem .55rem;font-size:.72rem;color:#1d4ed8;}
-.obsidian-tag::before{content:'';width:8px;height:8px;border-radius:50%;background:var(--tag-color,#6366f1);}
-.obsidian-preview__scroll{display:grid;gap:.85rem;max-height:500px;overflow:auto;padding-right:.2rem;}
-.obsidian-preview__header{display:flex;gap:.75rem;align-items:center;}
-.obsidian-preview__icon{width:46px;height:46px;border-radius:12px;background:#e0e7ff;display:grid;place-items:center;font-size:1.25rem;color:#1d4ed8;}
-.obsidian-preview__timestamp{margin:.25rem 0 0;color:#64748b;font-size:.8rem;}
-.obsidian-preview__actions{display:flex;gap:.45rem;flex-wrap:wrap;}
-.obsidian-preview__meta{display:grid;gap:.5rem;grid-template-columns:repeat(2,minmax(0,1fr));background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:.75rem;font-size:.85rem;color:#1f2937;}
-.obsidian-preview__meta dt{margin:0;font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:#94a3b8;}
-.obsidian-preview__meta dd{margin:0;font-size:.9rem;color:#0f172a;}
-.obsidian-preview__properties{display:grid;gap:.45rem;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:.75rem;font-size:.85rem;color:#1f2937;}
-.obsidian-preview__properties span{display:block;font-size:.7rem;text-transform:uppercase;color:#94a3b8;letter-spacing:.08em;}
-.obsidian-preview__properties strong{color:#0f172a;}
-.obsidian-preview__tags{display:flex;gap:.35rem;flex-wrap:wrap;}
-.obsidian-preview__shares h3{margin:0 0 .3rem;font-size:.95rem;color:#0f172a;}
-.obsidian-preview__sharelist{display:flex;gap:.35rem;flex-wrap:wrap;}
-.obsidian-preview__empty{display:grid;place-items:center;height:100%;font-size:.9rem;color:#94a3b8;text-align:center;background:#fff;border:1px dashed #e2e8f0;border-radius:12px;padding:1.2rem;}
-.obsidian-empty{text-align:center;display:grid;gap:.6rem;justify-items:center;background:#fff;border:1px dashed #e2e8f0;border-radius:14px;padding:1.6rem;color:#64748b;}
-.obsidian-pill{display:inline-flex;align-items:center;background:#e0e7ff;border-radius:999px;padding:.25rem .6rem;font-size:.75rem;color:#1d4ed8;font-weight:500;}
-.obsidian-pill.is-muted{background:#edf2f7;color:#64748b;}
-.obsidian-modal{position:fixed;inset:0;z-index:50;display:grid;place-items:center;padding:1.5rem;background:rgba(15,23,42,.25);backdrop-filter:blur(6px);transition:opacity .2s ease;}
-.obsidian-modal.hidden{opacity:0;pointer-events:none;}
-.obsidian-modal__overlay{position:absolute;inset:0;}
-.obsidian-modal__dialog{position:relative;z-index:1;width:min(520px,100%);background:#fff;border:1px solid #e2e8f0;border-radius:16px;display:grid;gap:.65rem;padding:1rem 1.1rem 1.2rem;box-shadow:0 22px 44px rgba(15,23,42,.12);}
-.obsidian-modal__dialog--capture{width:min(560px,100%);}
-.obsidian-modal__dialog header input{width:100%;background:#fff;border:1px solid #cbd5f5;border-radius:.75rem;padding:.5rem .75rem;color:#0f172a;font-size:.95rem;}
-.obsidian-modal__body{display:grid;gap:.65rem;}
-.obsidian-modal__grid{display:grid;gap:.65rem;grid-template-columns:repeat(2,minmax(0,1fr));}
-.obsidian-modal__toggle{display:flex;align-items:center;gap:.5rem;font-size:.85rem;color:#475569;}
-.obsidian-modal__toggle input{width:1rem;height:1rem;}
-.obsidian-modal__status{margin:.2rem 0 0;color:#64748b;font-size:.8rem;min-height:1.2rem;}
-.obsidian-modal__status.is-error{color:#b91c1c;}
-.obsidian-modal__status.is-success{color:#047857;}
-.obsidian-modal__footer{display:flex;justify-content:flex-end;gap:.6rem;align-items:center;padding-top:.35rem;}
-.obsidian-modal__results{list-style:none;margin:0;padding:0;display:grid;gap:.3rem;max-height:300px;overflow:auto;}
-.obsidian-modal__results li{border-radius:10px;padding:.5rem .7rem;background:#f8fafc;border:1px solid #e2e8f0;color:#1f2937;cursor:pointer;transition:border-color .2s ease,background .2s ease;}
-.obsidian-modal__results li.is-active{border-color:#2563eb;background:#dbeafe;}
-.obsidian-modal__hint{font-size:.75rem;color:#64748b;}
-@media (max-width:1200px){.obsidian-layout{grid-template-columns:260px minmax(0,1fr);} .obsidian-preview{display:none;}}
-@media (max-width:960px){.obsidian-layout{grid-template-columns:minmax(0,1fr);} .obsidian-sidebar{grid-column:1 / -1;} .obsidian-main{grid-column:1 / -1;}}
-@media (max-width:720px){.obsidian-shell{padding:1.25rem;} .obsidian-header__titles h1{font-size:1.45rem;} .obsidian-layout{grid-template-columns:minmax(0,1fr);} .obsidian-sidebar,.obsidian-main,.obsidian-preview{grid-column:1 / -1;}}
+:root[data-theme="obsidian"] {
+  color-scheme: only light;
+  --surface-bg: #f6f7fb;
+  --surface-panel: #ffffff;
+  --surface-border: #e2e8f0;
+  --surface-accent: #2563eb;
+  --surface-accent-soft: #eff6ff;
+  --surface-muted: #94a3b8;
+  --surface-strong: #0f172a;
+  --surface-shadow: rgba(15, 23, 42, 0.08);
+}
+
+.obsidian-shell {
+  background: var(--surface-bg);
+  border-radius: 28px;
+  padding: 1.8rem;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  box-shadow: 0 34px 68px var(--surface-shadow);
+  margin-bottom: 2rem;
+}
+
+.amanote-grid {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 1.4rem;
+}
+
+.amanote-main {
+  display: grid;
+  gap: 1.2rem;
+}
+
+.amanote-rail {
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  gap: 1.2rem;
+  background: linear-gradient(180deg, rgba(255,255,255,0.9), rgba(248,250,252,0.95));
+  border-radius: 22px;
+  border: 1px solid var(--surface-border);
+  padding: 1.2rem 1.1rem;
+  box-shadow: 0 22px 40px rgba(15,23,42,0.08);
+}
+
+.amanote-rail__brand {
+  display: flex;
+  gap: 0.8rem;
+  align-items: center;
+}
+
+.amanote-rail__glyph {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  background: var(--surface-accent);
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-size: 1.4rem;
+}
+
+.amanote-rail__brand strong {
+  display: block;
+  font-size: 1.05rem;
+  color: var(--surface-strong);
+}
+
+.amanote-rail__brand small {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--surface-muted);
+}
+
+.amanote-rail__statuses {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.amanote-rail__status {
+  display: flex;
+  gap: 0.8rem;
+  align-items: center;
+  text-decoration: none;
+  padding: 0.5rem 0.55rem;
+  border-radius: 14px;
+  color: var(--surface-strong);
+  border: 1px solid transparent;
+  transition: all 0.18s ease;
+}
+
+.amanote-rail__status:hover {
+  border-color: rgba(37,99,235,0.25);
+  background: rgba(37,99,235,0.08);
+}
+
+.amanote-rail__status.is-active {
+  border-color: var(--surface-accent);
+  background: var(--surface-accent-soft);
+  box-shadow: inset 0 0 0 1px rgba(37,99,235,0.2);
+}
+
+.amanote-rail__icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  background: rgba(37,99,235,0.14);
+  display: grid;
+  place-items: center;
+  font-size: 1.1rem;
+  color: var(--surface-accent);
+}
+
+.amanote-rail__status strong {
+  display: block;
+  font-size: 0.95rem;
+}
+
+.amanote-rail__status small {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--surface-muted);
+}
+
+.amanote-rail__tags {
+  background: rgba(241,245,249,0.9);
+  border-radius: 18px;
+  border: 1px dashed rgba(148,163,184,0.4);
+  padding: 0.85rem;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.amanote-rail__tags-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.amanote-rail__tags h3 {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--surface-strong);
+}
+
+.amanote-rail__clear {
+  font-size: 0.75rem;
+  color: var(--surface-accent);
+  text-decoration: none;
+}
+
+.amanote-rail__tags ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.amanote-rail__tag {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.45rem 0.55rem;
+  border-radius: 12px;
+  text-decoration: none;
+  color: var(--surface-strong);
+  border: 1px solid transparent;
+  transition: all 0.18s ease;
+}
+
+.amanote-rail__tag:hover {
+  border-color: rgba(37,99,235,0.25);
+  background: rgba(37,99,235,0.08);
+}
+
+.amanote-rail__tag.is-active {
+  border-color: var(--surface-accent);
+  background: var(--surface-accent-soft);
+}
+
+.amanote-rail__tag small {
+  margin-left: auto;
+  font-size: 0.72rem;
+  color: var(--surface-muted);
+}
+
+.amanote-rail__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tag-color, var(--surface-accent));
+}
+
+.amanote-rail__empty {
+  margin: 0;
+  font-size: 0.76rem;
+  color: var(--surface-muted);
+}
+
+.amanote-rail__quick {
+  background: var(--surface-accent);
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  padding: 0.55rem 1.1rem;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 16px 30px rgba(37,99,235,0.32);
+}
+.obsidian-header {
+  background: var(--surface-panel);
+  border-radius: 20px;
+  border: 1px solid var(--surface-border);
+  padding: 1.2rem 1.4rem;
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  box-shadow: 0 20px 46px var(--surface-shadow);
+}
+
+.obsidian-header__titles {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.obsidian-header__eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.7rem;
+  color: var(--surface-muted);
+}
+
+.obsidian-header__titles h1 {
+  margin: 0;
+  font-size: 1.6rem;
+  color: var(--surface-strong);
+}
+
+.obsidian-header__subtitle {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--surface-muted);
+  max-width: 520px;
+}
+
+.obsidian-header__actions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.obsidian-header__command,
+.obsidian-header__quick,
+.obsidian-header__new {
+  border-radius: 999px;
+  padding: 0.5rem 1.1rem;
+  font-weight: 600;
+  font-size: 0.9rem;
+  border: 1px solid transparent;
+  cursor: pointer;
+  text-decoration: none;
+  transition: transform 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.obsidian-header__command {
+  background: #fff;
+  border-color: rgba(148,163,184,0.45);
+  color: var(--surface-strong);
+}
+
+.obsidian-header__command:hover {
+  border-color: var(--surface-accent);
+  color: var(--surface-accent);
+}
+
+.obsidian-header__quick {
+  background: var(--surface-accent-soft);
+  border-color: rgba(37,99,235,0.2);
+  color: var(--surface-accent);
+}
+
+.obsidian-header__new {
+  background: var(--surface-accent);
+  color: #fff;
+  box-shadow: 0 18px 38px rgba(37,99,235,0.26);
+}
+
+.obsidian-header__actions > *:hover {
+  transform: translateY(-1px);
+}
+
+.obsidian-layout {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr) 320px;
+  gap: 1.2rem;
+}
+
+.obsidian-sidebar,
+.obsidian-main,
+.obsidian-preview {
+  background: var(--surface-panel);
+  border-radius: 20px;
+  border: 1px solid var(--surface-border);
+  padding: 1.2rem;
+  box-shadow: 0 18px 36px var(--surface-shadow);
+  display: grid;
+  gap: 1.05rem;
+}
+
+.obsidian-search {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.obsidian-search__field span {
+  display: block;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--surface-muted);
+  margin-bottom: 0.35rem;
+}
+
+.obsidian-search input {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid rgba(148,163,184,0.45);
+  padding: 0.6rem 0.85rem;
+  font-size: 0.95rem;
+  color: var(--surface-strong);
+}
+
+.obsidian-search__meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-size: 0.78rem;
+  color: var(--surface-muted);
+}
+
+.obsidian-search__hint kbd {
+  background: rgba(226,232,240,0.8);
+  border-radius: 6px;
+  padding: 0.15rem 0.35rem;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.7rem;
+}
+
+.obsidian-search__chip {
+  background: rgba(226,232,240,0.9);
+  border-radius: 999px;
+  padding: 0.25rem 0.65rem;
+  color: var(--surface-strong);
+  font-size: 0.74rem;
+}
+
+.obsidian-search__reset {
+  color: var(--surface-accent);
+  text-decoration: none;
+}
+
+.obsidian-summary {
+  background: rgba(248,250,252,0.9);
+  border-radius: 16px;
+  border: 1px dashed rgba(148,163,184,0.45);
+  padding: 0.9rem;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.obsidian-summary span {
+  display: block;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  color: var(--surface-muted);
+  text-transform: uppercase;
+}
+
+.obsidian-summary strong {
+  display: block;
+  font-size: 1rem;
+  color: var(--surface-strong);
+}
+
+.obsidian-statuses ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.obsidian-statuses li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: rgba(248,250,252,0.95);
+  border-radius: 12px;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid rgba(226,232,240,0.9);
+  font-size: 0.85rem;
+  color: var(--surface-strong);
+}
+
+.obsidian-templates header h2 {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--surface-strong);
+}
+
+.obsidian-templates header p {
+  margin: 0.35rem 0 0;
+  color: var(--surface-muted);
+  font-size: 0.82rem;
+}
+
+.obsidian-templates h3 {
+  margin: 0.6rem 0 0.35rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 0.7rem;
+  color: var(--surface-muted);
+}
+
+.obsidian-template__empty {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--surface-muted);
+}
+
+.obsidian-templates ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.obsidian-template {
+  background: rgba(248,250,252,0.9);
+  border-radius: 14px;
+  border: 1px solid rgba(226,232,240,0.85);
+  padding: 0.65rem 0.7rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.obsidian-template--shared {
+  background: rgba(240,249,255,0.95);
+}
+
+.obsidian-template__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.obsidian-template__apply {
+  text-decoration: none;
+  color: var(--surface-strong);
+  display: flex;
+  gap: 0.55rem;
+  align-items: center;
+}
+
+.obsidian-template__icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: rgba(37,99,235,0.12);
+  display: grid;
+  place-items: center;
+  font-size: 0.95rem;
+  color: var(--surface-accent);
+}
+
+.obsidian-template__apply strong {
+  display: block;
+  font-size: 0.9rem;
+}
+
+.obsidian-template__apply em,
+.obsidian-template__apply small {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--surface-muted);
+  font-style: normal;
+}
+
+.obsidian-template__share {
+  background: #fff;
+  border: 1px solid rgba(148,163,184,0.45);
+  border-radius: 999px;
+  padding: 0.35rem 0.8rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.obsidian-template__sharelist {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.obsidian-note-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.obsidian-note {
+  background: rgba(248,250,252,0.95);
+  border-radius: 18px;
+  border: 1px solid rgba(226,232,240,0.9);
+  padding: 0.85rem;
+  display: grid;
+  gap: 0.55rem;
+  cursor: pointer;
+  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.obsidian-note:hover {
+  transform: translateY(-1px);
+  border-color: rgba(37,99,235,0.32);
+  box-shadow: 0 18px 32px rgba(15,23,42,0.1);
+}
+
+.obsidian-note.is-active {
+  border-color: var(--surface-accent);
+  box-shadow: 0 20px 38px rgba(37,99,235,0.18);
+}
+
+.obsidian-note__header {
+  display: flex;
+  gap: 0.65rem;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.obsidian-note__icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: rgba(37,99,235,0.12);
+  display: grid;
+  place-items: center;
+  font-size: 1rem;
+  color: var(--surface-accent);
+}
+
+.obsidian-note__titles h3 {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--surface-strong);
+}
+
+.obsidian-note__meta {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 0.74rem;
+  color: var(--surface-muted);
+}
+
+.obsidian-note__timestamp {
+  color: var(--surface-strong);
+}
+
+.obsidian-note__shared {
+  color: #0f766e;
+  font-weight: 600;
+}
+
+.obsidian-note__counts {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.obsidian-note__pill {
+  background: #fff;
+  border-radius: 999px;
+  padding: 0.22rem 0.55rem;
+  font-size: 0.72rem;
+  color: var(--surface-muted);
+}
+
+.obsidian-note__excerpt {
+  margin: 0;
+  font-size: 0.88rem;
+  color: rgba(15,23,42,0.75);
+}
+
+.obsidian-note__tags {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.obsidian-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.22rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(37,99,235,0.12);
+  color: var(--surface-accent);
+  font-size: 0.72rem;
+}
+
+.obsidian-tag::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tag-color, var(--surface-accent));
+}
+
+.obsidian-preview {
+  padding: 1.25rem;
+}
+
+.obsidian-preview__scroll {
+  display: grid;
+  gap: 0.95rem;
+}
+
+.obsidian-preview__header {
+  display: flex;
+  gap: 0.9rem;
+  align-items: center;
+}
+
+.obsidian-preview__icon {
+  width: 52px;
+  height: 52px;
+  border-radius: 16px;
+  background: rgba(37,99,235,0.12);
+  display: grid;
+  place-items: center;
+  font-size: 1.3rem;
+  color: var(--surface-accent);
+}
+
+.obsidian-preview__header h2 {
+  margin: 0.25rem 0 0;
+  font-size: 1.35rem;
+  color: var(--surface-strong);
+}
+
+.obsidian-preview__timestamp {
+  margin: 0;
+  color: var(--surface-muted);
+  font-size: 0.78rem;
+}
+
+.obsidian-preview__actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.obsidian-preview__actions .btn,
+.obsidian-btn,
+.obsidian-primary {
+  border-radius: 999px;
+  padding: 0.5rem 1.05rem;
+  font-weight: 600;
+  font-size: 0.88rem;
+  cursor: pointer;
+  text-decoration: none;
+  border: 1px solid transparent;
+}
+
+.obsidian-primary {
+  background: var(--surface-accent);
+  color: #fff;
+  box-shadow: 0 18px 38px rgba(37,99,235,0.28);
+}
+
+.obsidian-btn {
+  background: rgba(37,99,235,0.12);
+  color: var(--surface-accent);
+}
+
+.obsidian-btn--ghost {
+  background: #fff;
+  border-color: rgba(148,163,184,0.45);
+  color: var(--surface-strong);
+}
+.obsidian-preview__meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+  background: rgba(248,250,252,0.9);
+  border-radius: 16px;
+  border: 1px solid rgba(226,232,240,0.9);
+  padding: 0.85rem;
+  font-size: 0.8rem;
+  color: var(--surface-strong);
+}
+
+.obsidian-preview__meta dt {
+  margin: 0;
+  font-size: 0.68rem;
+  color: var(--surface-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.obsidian-preview__meta dd {
+  margin: 0.2rem 0 0;
+  font-weight: 600;
+}
+
+.obsidian-preview__properties {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.7rem;
+  background: rgba(248,250,252,0.92);
+  border-radius: 16px;
+  border: 1px dashed rgba(148,163,184,0.45);
+  padding: 0.85rem;
+  font-size: 0.8rem;
+}
+
+.obsidian-preview__properties span {
+  display: block;
+  font-size: 0.68rem;
+  color: var(--surface-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.obsidian-preview__properties strong {
+  color: var(--surface-strong);
+  margin-top: 0.25rem;
+  display: block;
+}
+
+.obsidian-preview__tags {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.obsidian-preview__shares h3 {
+  margin: 0 0 0.35rem;
+  font-size: 0.95rem;
+  color: var(--surface-strong);
+}
+
+.obsidian-preview__sharelist {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.obsidian-pill {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(226,232,240,0.9);
+  border-radius: 999px;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.72rem;
+  color: var(--surface-strong);
+  font-weight: 500;
+}
+
+.obsidian-pill.is-muted {
+  background: rgba(148,163,184,0.18);
+  color: var(--surface-muted);
+}
+
+.obsidian-empty {
+  text-align: center;
+  display: grid;
+  gap: 0.6rem;
+  justify-items: center;
+  background: rgba(248,250,252,0.9);
+  border: 1px dashed rgba(148,163,184,0.4);
+  border-radius: 16px;
+  padding: 1.5rem;
+  color: var(--surface-muted);
+}
+
+.amanote-tag {
+  background: rgba(37,99,235,0.12);
+  color: var(--surface-accent);
+  display: inline-flex;
+  gap: 0.35rem;
+  align-items: center;
+  padding: 0.22rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+}
+
+.amanote-tag::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tag-color, var(--surface-accent));
+}
+
+.amanote-tag--empty {
+  background: rgba(148,163,184,0.2);
+  color: var(--surface-muted);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.28rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.badge--blue { background: #dbeafe; color: #1d4ed8; }
+.badge--indigo { background: #e0e7ff; color: #4338ca; }
+.badge--purple { background: #ede9fe; color: #7c3aed; }
+.badge--orange { background: #fef3c7; color: #b45309; }
+.badge--green { background: #dcfce7; color: #047857; }
+.badge--slate { background: #f1f5f9; color: #475569; }
+.badge--danger { background: #fee2e2; color: #b91c1c; }
+.badge--amber { background: #fef3c7; color: #92400e; }
+.badge--teal { background: #ccfbf1; color: #0f766e; }
+
+.obsidian-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+  background: rgba(15,23,42,0.28);
+  backdrop-filter: blur(6px);
+  transition: opacity 0.2s ease;
+}
+
+.obsidian-modal.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.obsidian-modal__overlay {
+  position: absolute;
+  inset: 0;
+}
+
+.obsidian-modal__dialog {
+  position: relative;
+  z-index: 1;
+  width: min(560px, 100%);
+  background: #fff;
+  border-radius: 24px;
+  border: 1px solid rgba(226,232,240,0.9);
+  box-shadow: 0 45px 90px rgba(15,23,42,0.2);
+  padding: 1.5rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.obsidian-modal__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.8rem;
+}
+
+.obsidian-modal__header h3 {
+  margin: 0;
+  font-size: 1.3rem;
+}
+
+.obsidian-modal__subtitle {
+  margin: 0.25rem 0 0;
+  color: var(--surface-muted);
+  font-size: 0.85rem;
+}
+
+.obsidian-modal__close {
+  background: rgba(226,232,240,0.7);
+  border: none;
+  border-radius: 50%;
+  width: 34px;
+  height: 34px;
+  font-size: 1.2rem;
+  cursor: pointer;
+  color: var(--surface-strong);
+}
+
+.obsidian-modal__form {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.obsidian-modal__body {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.obsidian-modal__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.obsidian-field span {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--surface-muted);
+  margin-bottom: 0.3rem;
+}
+
+.obsidian-field input,
+.obsidian-field select,
+.obsidian-field textarea {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid rgba(148,163,184,0.45);
+  padding: 0.55rem 0.8rem;
+  font-size: 0.95rem;
+  color: var(--surface-strong);
+}
+
+.obsidian-modal__toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--surface-strong);
+}
+
+.obsidian-modal__status {
+  min-height: 1.2rem;
+  font-size: 0.8rem;
+  color: var(--surface-muted);
+}
+
+.obsidian-modal__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+}
+
+.share-modal,
+#templateShareModal {
+  position: fixed;
+  inset: 0;
+  z-index: 75;
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+  background: rgba(15,23,42,0.28);
+  backdrop-filter: blur(6px);
+  transition: opacity 0.2s ease;
+}
+
+.share-modal.hidden,
+#templateShareModal.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.share-modal__overlay,
+#templateShareModal .share-modal__overlay {
+  position: absolute;
+  inset: 0;
+}
+
+.share-modal__dialog {
+  position: relative;
+  z-index: 1;
+  width: min(480px, 100%);
+  background: #fff;
+  border-radius: 22px;
+  border: 1px solid rgba(226,232,240,0.9);
+  box-shadow: 0 40px 90px rgba(15,23,42,0.18);
+  padding: 1.3rem;
+  display: grid;
+  gap: 0.85rem;
+}
+
+.share-modal__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.6rem;
+}
+
+.share-modal__header h3 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.share-modal__subtitle {
+  margin: 0.2rem 0 0;
+  font-size: 0.82rem;
+  color: var(--surface-muted);
+}
+
+.share-modal__close {
+  background: rgba(226,232,240,0.7);
+  border: none;
+  border-radius: 50%;
+  width: 32px;
+  height: 32px;
+  font-size: 1.15rem;
+  cursor: pointer;
+}
+
+.share-modal__form {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.share-modal__body {
+  max-height: 260px;
+  overflow: auto;
+  border-radius: 12px;
+  border: 1px solid rgba(226,232,240,0.85);
+  padding: 0.6rem;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.share-modal__option {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  background: rgba(248,250,252,0.95);
+  border-radius: 10px;
+  padding: 0.5rem 0.6rem;
+  font-size: 0.85rem;
+  color: var(--surface-strong);
+}
+
+.share-modal__status {
+  font-size: 0.78rem;
+  color: var(--surface-muted);
+}
+
+.share-modal__status.is-error {
+  color: #b91c1c;
+}
+
+.share-modal__footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+@media (max-width: 1280px) {
+  .amanote-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .amanote-rail {
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    grid-template-rows: none;
+  }
+  .obsidian-layout {
+    grid-template-columns: minmax(0,1fr);
+  }
+  .obsidian-preview {
+    order: -1;
+  }
+}
+
+@media (max-width: 960px) {
+  .obsidian-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .obsidian-header__actions {
+    width: 100%;
+  }
+  .obsidian-layout {
+    gap: 1rem;
+  }
+}
+
+@media (max-width: 720px) {
+  .obsidian-shell {
+    padding: 1.2rem;
+  }
+  .amanote-rail {
+    padding: 1rem;
+  }
+  .obsidian-modal__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 </style>
 
 <script>
@@ -1381,7 +2420,11 @@ include __DIR__ . '/../includes/header.php';
     if (previewOwner) previewOwner.textContent = payload.ownerLabel || '';
     if (previewPhotos) previewPhotos.textContent = String(payload.photoCount || 0);
     if (previewComments) previewComments.textContent = String(payload.commentCount || 0);
-    if (previewDate) previewDate.textContent = payload.noteDate || '';
+    if (previewDate) {
+      const formatted = (payload.noteDateFormatted || '').trim();
+      const raw = (payload.noteDate || '').trim();
+      previewDate.textContent = formatted || raw;
+    }
     if (previewView && payload.links) previewView.setAttribute('href', payload.links.view || '#');
     if (previewEdit && payload.links) previewEdit.setAttribute('href', payload.links.edit || '#');
     if (previewShareBtn) {
