@@ -426,6 +426,19 @@ include __DIR__ . '/../includes/header.php';
             }
             ?>
           <?php endif; ?>
+        </header>
+        <div class="note-panel__body">
+          <div class="note-photos" id="noteViewPhotoGrid">
+            <?php for ($i = 1; $i <= 3; $i++): $p = $photos[$i] ?? null; ?>
+              <?php if ($p): ?>
+                <a href="<?= sanitize($p['url']); ?>" class="note-photo-thumb js-zoom" target="_blank" rel="noopener">
+                  <img src="<?= sanitize($p['url']); ?>" alt="Note photo <?= $i; ?>" loading="lazy" decoding="async">
+                </a>
+              <?php else: ?>
+                <div class="note-photo-empty muted">Slot <?= $i; ?></div>
+              <?php endif; ?>
+            <?php endfor; ?>
+          </div>
         </div>
 
         <form method="post" class="obsidian-comment-form obsidian-comment-form--new">

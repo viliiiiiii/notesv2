@@ -445,6 +445,7 @@ try {
     error_log('Notes index query failed: ' . $e->getMessage());
     $rows = [];
 }
+unset($row);
 
 $noteIds = array_map(static fn(array $row) => (int)($row['id'] ?? 0), $rows);
 $noteIds = array_values(array_filter($noteIds));
@@ -573,6 +574,61 @@ foreach ($rows as $candidate) {
 if ($activeNote === null && $rows) {
     $activeNote = $rows[0];
 }
+if ($activeNote === null && $rows) {
+    $activeNote = $rows[0];
+}
+
+$totalNotes       = count($rows);
+$ownedCount       = 0;
+$sharedCount      = 0;
+$photoRichCount   = 0;
+$commentRichCount = 0;
+$photoTotal       = 0;
+$latestTimestamp  = null;
+$statusCounts     = array_fill_keys(array_keys($statuses), 0);
+
+foreach ($rows as $row) {
+    $isOwner  = !empty($row['is_owner']);
+    $isShared = !empty($row['is_shared']) && !$isOwner;
+    if ($isOwner) {
+        $ownedCount++;
+    }
+    if ($isShared) {
+        $sharedCount++;
+    }
+    $pc = (int)($row['photo_count'] ?? 0);
+    $cc = (int)($row['comment_count'] ?? 0);
+    if ($pc > 0) {
+        $photoRichCount++;
+    }
+    if ($cc > 0) {
+        $commentRichCount++;
+    }
+    $photoTotal += $pc;
+
+    $status = $row['_status'] ?? NOTES_DEFAULT_STATUS;
+    if (!isset($statusCounts[$status])) {
+        $statusCounts[$status] = 0;
+    }
+    $statusCounts[$status]++;
+
+    $candidateTimestamp = $row['updated_at'] ?? $row['created_at'] ?? $row['note_date'] ?? null;
+    if ($candidateTimestamp !== null) {
+        if ($latestTimestamp === null || strcmp((string)$candidateTimestamp, (string)$latestTimestamp) > 0) {
+            $latestTimestamp = (string)$candidateTimestamp;
+        }
+    }
+}
+
+$avgPhotos        = $totalNotes > 0 ? $photoTotal / $totalNotes : 0.0;
+$avgPhotosRounded = $avgPhotos > 0 ? round($avgPhotos, 1) : 0.0;
+$percentOwned     = $totalNotes > 0 ? round(($ownedCount / $totalNotes) * 100) : 0;
+$percentShared    = $totalNotes > 0 ? round(($sharedCount / $totalNotes) * 100) : 0;
+$activeCount      = $totalNotes - ($statusCounts['archived'] ?? 0);
+$completedCount   = $statusCounts['complete'] ?? 0;
+$inProgressCount  = $statusCounts['in_progress'] ?? 0;
+$reviewCount      = $statusCounts['review'] ?? 0;
+$blockedCount     = $statusCounts['blocked'] ?? 0;
 
 $totalNotes       = count($rows);
 $ownedCount       = 0;
