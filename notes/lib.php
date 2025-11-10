@@ -1721,12 +1721,12 @@ function notes_can_share(array $note): bool {
 /* ---------- comments ---------- */
 
 function notes__ensure_comment_table(PDO $pdo): void {
-    static $attempted = false;
-    if ($attempted) {
+    if (notes__table_exists($pdo, 'note_comments')) {
         return;
     }
-    $attempted = true;
-    $sql = <<<SQL
+
+    $attempts = [
+        <<<SQL
 CREATE TABLE IF NOT EXISTS note_comments (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   note_id BIGINT UNSIGNED NOT NULL,
@@ -1741,11 +1741,32 @@ CREATE TABLE IF NOT EXISTS note_comments (
   INDEX idx_note_created (note_id, created_at),
   INDEX idx_note_parent (note_id, parent_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-SQL;
-    try {
-        $pdo->exec($sql);
-    } catch (Throwable $e) {
-        error_log('notes: unable to ensure note_comments table: ' . $e->getMessage());
+SQL,
+        <<<SQL
+CREATE TABLE IF NOT EXISTS note_comments (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  note_id BIGINT UNSIGNED NOT NULL,
+  user_id BIGINT UNSIGNED NOT NULL,
+  parent_id BIGINT UNSIGNED NULL,
+  body LONGTEXT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_note_created (note_id, created_at),
+  INDEX idx_note_parent (note_id, parent_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+SQL,
+    ];
+
+    foreach ($attempts as $idx => $sql) {
+        try {
+            $pdo->exec($sql);
+        } catch (Throwable $e) {
+            error_log('notes: unable to ensure note_comments table (attempt ' . ($idx + 1) . '): ' . $e->getMessage());
+        }
+
+        if (notes__table_exists($pdo, 'note_comments')) {
+            return;
+        }
     }
 }
 

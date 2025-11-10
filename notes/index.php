@@ -287,12 +287,20 @@ $today     = date('Y-m-d');
             flex-direction: column;
             gap: 8px;
         }
+        .notes-sidebar__footer {
+            margin-top: auto;
+            padding-top: 16px;
+            border-top: 1px solid var(--notes-border);
+        }
         .notes-sidebar__heading {
             font-size: 0.75rem;
             letter-spacing: 0.12em;
             text-transform: uppercase;
             color: var(--notes-muted);
             font-weight: 600;
+        }
+        .button--full {
+            width: 100%;
         }
         .template-list {
             display: flex;
@@ -597,6 +605,13 @@ $today     = date('Y-m-d');
                 flex-direction: row;
                 overflow-x: auto;
                 gap: 16px;
+                flex-wrap: wrap;
+            }
+            .notes-sidebar__footer {
+                width: 100%;
+                margin-top: 0;
+                padding-top: 8px;
+                border-top: none;
             }
         }
     </style>
@@ -653,6 +668,10 @@ $today     = date('Y-m-d');
                     <?php endforeach; ?>
                 <?php endif; ?>
             </div>
+        </div>
+
+        <div class="notes-sidebar__footer">
+            <a class="button button--subtle button--full" href="../index.php">← Back to dashboard</a>
         </div>
     </aside>
 
