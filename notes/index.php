@@ -1,39 +1,49 @@
 <?php
 declare(strict_types=1);
+
 require_once __DIR__ . '/lib.php';
 require_login();
 
-$meId = (int)(current_user()['id'] ?? 0);
-$pdo  = get_pdo();
+$me      = current_user();
+$meId    = (int)($me['id'] ?? 0);
+$meEmail = htmlspecialchars((string)($me['email'] ?? ''), ENT_QUOTES, 'UTF-8');
+
+if ($meId <= 0) {
+    http_response_code(403);
+    exit('Not authorized.');
+}
+
+function notes_is_ajax_request(): bool
+{
+    return isset($_SERVER['HTTP_X_REQUESTED_WITH'])
+        && strtolower((string)$_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest';
+}
 
 if (is_post()) {
-    $isAjax = isset($_SERVER['HTTP_X_REQUESTED_WITH'])
-        && strtolower((string)$_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest';
-
-    $errorMessage = '';
-    $successPayload = null;
+    $isAjax = notes_is_ajax_request();
+    $error  = '';
+    $payload = null;
 
     if (!verify_csrf_token($_POST[CSRF_TOKEN_NAME] ?? null)) {
-        $errorMessage = 'Invalid security token.';
+        $error = 'Security token expired. Please refresh and try again.';
     } elseif (isset($_POST['update_note_shares'])) {
         $noteId = (int)($_POST['note_id'] ?? 0);
         $selected = array_map('intval', (array)($_POST['shared_ids'] ?? []));
         $note = notes_fetch($noteId);
         if (!$note || !notes_can_share($note)) {
-            $errorMessage = 'You cannot change sharing for this note.';
+            $error = 'You cannot change sharing on that note.';
         } else {
             try {
                 $result = notes_apply_shares($noteId, $selected, $note, true);
-                $shares = notes_get_share_details($noteId);
-                $successPayload = [
+                $payload = [
                     'ok'       => true,
-                    'shares'   => $shares,
-                    'selected' => $result['after'],
                     'note_id'  => $noteId,
+                    'selected' => $result['after'],
+                    'shares'   => notes_get_share_details($noteId),
                 ];
             } catch (Throwable $e) {
-                error_log('index note share failed: ' . $e->getMessage());
-                $errorMessage = 'Failed to update shares.';
+                error_log('notes: share update failed: ' . $e->getMessage());
+                $error = 'Failed to update shares.';
             }
         }
     } elseif (isset($_POST['update_template_shares'])) {
@@ -41,55 +51,37 @@ if (is_post()) {
         $selected   = array_map('intval', (array)($_POST['shared_ids'] ?? []));
         $template   = notes_template_fetch($templateId);
         if (!$template || !notes_template_can_share($template, $meId)) {
-            $errorMessage = 'You cannot share this template.';
+            $error = 'You cannot change template sharing.';
         } else {
             try {
                 $result = notes_apply_template_shares($templateId, $selected, $template, true);
-                $shares = notes_template_share_details($templateId);
-                $successPayload = [
-                    'ok'         => true,
-                    'shares'     => $shares,
-                    'selected'   => $result['after'],
-                    'template_id'=> $templateId,
+                $payload = [
+                    'ok'          => true,
+                    'template_id' => $templateId,
+                    'selected'    => $result['after'],
+                    'shares'      => notes_template_share_details($templateId),
                 ];
             } catch (Throwable $e) {
-                error_log('index template share failed: ' . $e->getMessage());
-                $errorMessage = 'Failed to update template shares.';
+                error_log('notes: template share update failed: ' . $e->getMessage());
+                $error = 'Failed to update template sharing.';
             }
         }
     } elseif (isset($_POST['quick_note'])) {
         $title    = trim((string)($_POST['title'] ?? ''));
         $noteDate = trim((string)($_POST['note_date'] ?? date('Y-m-d')));
         $status   = notes_normalize_status($_POST['status'] ?? NOTES_DEFAULT_STATUS);
-        $icon     = trim((string)($_POST['icon'] ?? ''));
-        $coverUrl = trim((string)($_POST['cover_url'] ?? ''));
         $body     = trim((string)($_POST['body'] ?? ''));
-        $tagInput = trim((string)($_POST['quick_tags'] ?? ''));
+        $tagsRaw  = trim((string)($_POST['quick_tags'] ?? ''));
 
         if ($title === '') {
-            $errorMessage = 'Title is required to capture a note.';
+            $error = 'Give the note a title.';
         } elseif ($noteDate === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $noteDate)) {
-            $errorMessage = 'Provide a valid date (YYYY-MM-DD).';
+            $error = 'Provide a valid date (YYYY-MM-DD).';
         } else {
+            $tagChunks = array_filter(array_map('trim', preg_split('/[,;\n]/', $tagsRaw) ?: []));
             $tags = [];
-            if ($tagInput !== '') {
-                $parts = preg_split('/[,;\n]/', $tagInput) ?: [];
-                foreach ($parts as $part) {
-                    $label = trim((string)$part);
-                    if ($label !== '') {
-                        $tags[] = ['label' => $label];
-                    }
-                }
-            }
-            $normalizedTags = notes_normalize_tags_input($tags);
-
-            $blocks = [];
-            if ($body !== '') {
-                $blocks[] = [
-                    'uid'  => notes_generate_block_uid(),
-                    'type' => 'paragraph',
-                    'text' => $body,
-                ];
+            foreach ($tagChunks as $chunk) {
+                $tags[] = ['label' => $chunk];
             }
 
             try {
@@ -98,2939 +90,785 @@ if (is_post()) {
                     'note_date'  => $noteDate,
                     'title'      => $title,
                     'body'       => $body,
-                    'icon'       => $icon,
-                    'cover_url'  => $coverUrl,
+                    'icon'       => null,
+                    'cover_url'  => null,
                     'status'     => $status,
                     'properties' => notes_default_properties(),
-                    'tags'       => $normalizedTags,
-                    'blocks'     => $blocks,
+                    'tags'       => notes_normalize_tags_input($tags),
+                    'blocks'     => [],
                 ]);
-                log_event('note.create.quick', 'note', $noteId);
-                $payload = notes__hydrate_index_payload($noteId);
-                if ($payload) {
-                    $successPayload = [
-                        'ok'      => true,
-                        'note'    => $payload,
-                    ];
-                } else {
-                    $errorMessage = 'Note created but could not refresh the workspace.';
-                }
+                $payload = [
+                    'ok'       => true,
+                    'redirect' => 'edit.php?id=' . $noteId,
+                ];
             } catch (Throwable $e) {
-                error_log('quick note capture failed: ' . $e->getMessage());
-                $errorMessage = 'Unable to capture note.';
+                error_log('notes: quick note insert failed: ' . $e->getMessage());
+                $error = 'Could not capture note.';
             }
         }
     }
 
     if ($isAjax) {
-        header('Content-Type: application/json');
-        if ($errorMessage !== '') {
+        header('Content-Type: application/json; charset=utf-8');
+        if ($error !== '') {
             http_response_code(400);
-            echo json_encode(['ok' => false, 'message' => $errorMessage], JSON_UNESCAPED_UNICODE);
+            echo json_encode(['ok' => false, 'message' => $error], JSON_UNESCAPED_UNICODE);
         } else {
-            echo json_encode($successPayload ?? ['ok' => true], JSON_UNESCAPED_UNICODE);
+            echo json_encode($payload ?? ['ok' => true], JSON_UNESCAPED_UNICODE);
         }
         exit;
     }
 
-    if ($errorMessage !== '') {
-        redirect_with_message('index.php', $errorMessage, 'error');
+    if ($error !== '') {
+        redirect_with_message('index.php', $error, 'error');
     } else {
-        redirect_with_message('index.php', 'Sharing updated.', 'success');
+        redirect_with_message('index.php', 'Changes saved.', 'success');
     }
     exit;
 }
 
-if (!function_exists('notes__search_index')) {
-    function notes__search_index(string $title, string $body = ''): string {
-        $plain = trim($title . ' ' . preg_replace('/\s+/u', ' ', strip_tags($body)));
-        if ($plain === '') {
-            return '';
-        }
-        if (function_exists('mb_strtolower')) {
-            return mb_strtolower($plain, 'UTF-8');
-        }
-        return strtolower($plain);
+$notes      = notes_list_for_user($meId);
+$templates  = notes_fetch_templates_for_user($meId);
+$ownedTpls  = array_filter($templates, static fn($tpl) => !empty($tpl['is_owner']));
+$sharedTpls = array_filter($templates, static fn($tpl) => empty($tpl['is_owner']));
+$statuses   = notes_available_statuses();
+$users      = notes_all_users();
+
+$shareIds = [];
+$templateShareSelections = [];
+foreach ($notes as $noteRow) {
+    foreach ($noteRow['share_ids'] as $sid) {
+        $shareIds[] = (int)$sid;
     }
 }
-if (!function_exists('notes__relative_time')) {
-    function notes__relative_time(?string $timestamp): string {
-        if (!$timestamp) {
-            return '';
-        }
-        try {
-            $dt = new DateTimeImmutable($timestamp);
-        } catch (Throwable $e) {
-            return (string)$timestamp;
-        }
-        $now  = new DateTimeImmutable('now');
-        $diff = $now->getTimestamp() - $dt->getTimestamp();
-        if ($diff < 0) {
-            $diff = 0;
-        }
-        if ($diff < 60) {
-            return $diff . 's ago';
-        }
-        $mins = (int)floor($diff / 60);
-        if ($mins < 60) {
-            return $mins . 'm ago';
-        }
-        $hours = (int)floor($mins / 60);
-        if ($hours < 24) {
-            return $hours . 'h ago';
-        }
-        $days = (int)floor($hours / 24);
-        if ($days < 7) {
-            return $days . 'd ago';
-        }
-        if ($days < 30) {
-            return (int)floor($days / 7) . 'w ago';
-        }
-        return $dt->format('M j, Y');
-    }
-}
-if (!function_exists('notes__excerpt')) {
-    function notes__excerpt(string $body, int $limit = 180): string {
-        $plain = trim(preg_replace('/\s+/u', ' ', strip_tags($body)) ?? '');
-        if ($plain === '') {
-            return '';
-        }
-        if (function_exists('mb_strimwidth')) {
-            return (string)mb_strimwidth($plain, 0, $limit, '…', 'UTF-8');
-        }
-        return strlen($plain) > $limit ? substr($plain, 0, $limit - 1) . '…' : $plain;
-    }
-}
-if (!function_exists('notes__format_date')) {
-    function notes__format_date(?string $date): string {
-        $date = trim((string)$date);
-        if ($date === '') {
-            return '';
-        }
-        try {
-            return (new DateTimeImmutable($date))->format('M j, Y');
-        } catch (Throwable $e) {
-            return $date;
-        }
-    }
-}
-
-if (!function_exists('notes__hydrate_index_payload')) {
-    function notes__hydrate_index_payload(int $noteId): ?array {
-        $note = notes_fetch($noteId);
-        if (!$note) {
-            return null;
-        }
-
-        $meta = notes_fetch_page_meta($noteId);
-        $properties = notes_normalize_properties($meta['properties'] ?? notes_default_properties());
-        $status = notes_normalize_status($meta['status'] ?? NOTES_DEFAULT_STATUS);
-        $icon = trim((string)($meta['icon'] ?? ''));
-        $coverUrl = trim((string)($meta['cover_url'] ?? ''));
-
-        $tags = notes_fetch_note_tags($noteId);
-        $tagPayload = array_map(static function ($tag): array {
-            return [
-                'label' => (string)($tag['label'] ?? ''),
-                'color' => (string)($tag['color'] ?? ''),
-            ];
-        }, is_array($tags) ? $tags : []);
-
-        $shareDetails = notes_get_share_details($noteId);
-        $shareIds = [];
-        $shareLabels = [];
-        foreach ($shareDetails as $share) {
-            $sid = (int)($share['id'] ?? 0);
-            if ($sid <= 0) {
-                continue;
-            }
-            $shareIds[] = $sid;
-            $label = trim((string)($share['label'] ?? ''));
-            if ($label !== '') {
-                $shareLabels[] = $label;
-            }
-        }
-
-        $excerpt = notes__excerpt((string)($note['body'] ?? ''), 220);
-        $photoCount = count(array_filter(notes_fetch_photos($noteId)));
-        $commentCount = notes_comment_count($noteId);
-
-        $timestamp = $note['updated_at'] ?? $note['created_at'] ?? $note['note_date'] ?? null;
-        $updatedRelative = $timestamp ? notes__relative_time((string)$timestamp) : '';
-        $updatedAbsolute = '';
-        if ($timestamp) {
-            try {
-                $updatedAbsolute = (new DateTimeImmutable((string)$timestamp))->format('Y-m-d H:i');
-            } catch (Throwable $e) {
-                $updatedAbsolute = (string)$timestamp;
-            }
-        }
-
-        $ownerId = (int)($note['user_id'] ?? 0);
-
-        return [
-            'id'             => $noteId,
-            'title'          => trim((string)($note['title'] ?? '')) ?: 'Untitled',
-            'status'         => $status,
-            'statusLabel'    => notes_status_label($status),
-            'statusBadge'    => notes_status_badge_class($status),
-            'icon'           => $icon,
-            'coverUrl'       => $coverUrl,
-            'excerpt'        => $excerpt,
-            'ownerId'        => $ownerId,
-            'ownerLabel'     => notes_user_label($ownerId),
-            'isOwner'        => $ownerId === (int)(current_user()['id'] ?? 0),
-            'isShared'       => $shareIds && $ownerId !== (int)(current_user()['id'] ?? 0),
-            'properties'     => $properties,
-            'tags'           => $tagPayload,
-            'shareIds'       => $shareIds,
-            'shareLabels'    => $shareLabels,
-            'shareCount'     => count($shareIds),
-            'photoCount'     => $photoCount,
-            'commentCount'   => $commentCount,
-            'noteDate'       => $note['note_date'] ?? null,
-            'updatedRelative'=> $updatedRelative,
-            'updatedAbsolute'=> $updatedAbsolute,
-            'canShare'       => notes_can_share($note),
-            'links'          => [
-                'view' => 'view.php?id=' . $noteId,
-                'edit' => 'edit.php?id=' . $noteId,
-            ],
-        ];
-    }
-}
-
-$hasNoteDate    = notes__col_exists($pdo, 'notes', 'note_date');
-$hasCreatedAt   = notes__col_exists($pdo, 'notes', 'created_at');
-$hasUpdatedAt   = notes__col_exists($pdo, 'notes', 'updated_at');
-$hasPhotosTbl   = notes__table_exists($pdo, 'note_photos');
-$hasCommentsTbl = notes_comments_table_exists($pdo);
-$hasMetaTbl     = notes__table_exists($pdo, 'note_pages_meta');
-$hasTagTbl      = notes__table_exists($pdo, 'note_tag_assignments') && notes__table_exists($pdo, 'note_tags_catalog');
-
-$search      = trim((string)($_GET['q'] ?? ''));
-$from        = trim((string)($_GET['from'] ?? ''));
-$to          = trim((string)($_GET['to'] ?? ''));
-$statusParam = trim((string)($_GET['status'] ?? ''));
-$tagFilter   = trim((string)($_GET['tag'] ?? ''));
-
-$statuses = notes_available_statuses();
-$statusIcons = [
-    'idea'        => '💡',
-    'in_progress' => '⚙️',
-    'review'      => '📝',
-    'blocked'     => '⛔️',
-    'complete'    => '✅',
-    'archived'    => '🗃️',
-];
-$statusFilter = '';
-if ($statusParam !== '') {
-    $candidateKey = strtolower(str_replace([' ', '-'], '_', $statusParam));
-    if (isset($statuses[$candidateKey])) {
-        $statusFilter = $candidateKey;
-    } else {
-        foreach ($statuses as $slug => $label) {
-            if (strcasecmp($label, $statusParam) === 0) {
-                $statusFilter = $slug;
-                break;
-            }
-        }
-    }
-}
-
-$allowedViews = ['table', 'board'];
-$viewInput = $_GET['view'] ?? '';
-if ($viewInput === 'sticky') {
-    $viewInput = 'board';
-}
-
-$today = date('Y-m-d');
-if ($viewInput && in_array($viewInput, $allowedViews, true)) {
-    $view = $viewInput;
-} else {
-    $cookieView = $_COOKIE['notes_view'] ?? '';
-    if ($cookieView === 'sticky') {
-        $cookieView = 'board';
-    }
-    if ($cookieView && in_array($cookieView, $allowedViews, true)) {
-        $view = $cookieView;
-    } else {
-        $view = 'table';
-    }
-}
-@setcookie('notes_view', $view, time() + 31536000, '/', '', false, true);
-
-$where  = [];
-$params = [];
-
-if ($search !== '') {
-    $where[] = '(n.title LIKE :q OR COALESCE(n.body, "") LIKE :q)';
-    $params[':q'] = '%' . $search . '%';
-}
-if ($hasNoteDate && $from !== '') {
-    $where[] = 'n.note_date >= :from';
-    $params[':from'] = $from;
-}
-if ($hasNoteDate && $to !== '') {
-    $where[] = 'n.note_date <= :to';
-    $params[':to'] = $to;
-}
-
-$sharesCol = notes__shares_column($pdo);
-if ($sharesCol) {
-    $shareValue = $sharesCol === 'user_id' ? $meId : (string)$meId;
-    $where[] = "(n.user_id = :me_owner_where OR EXISTS (SELECT 1 FROM notes_shares s WHERE s.note_id = n.id AND s.{$sharesCol} = :me_share_where))";
-    $params[':me_owner_where'] = $meId;
-    $params[':me_share_where'] = $shareValue;
-    $isSharedExpr = "EXISTS(SELECT 1 FROM notes_shares s WHERE s.note_id = n.id AND s.{$sharesCol} = :me_share_select) AS is_shared";
-    $params[':me_share_select'] = $shareValue;
-} else {
-    $where[] = 'n.user_id = :me_owner_where';
-    $params[':me_owner_where'] = $meId;
-    $isSharedExpr = '0 AS is_shared';
-}
-
-if ($statusFilter !== '' && $hasMetaTbl) {
-    $where[] = 'COALESCE(npm.status, :default_status) = :status_filter';
-    $params[':status_filter'] = $statusFilter;
-    $params[':default_status'] = NOTES_DEFAULT_STATUS;
-}
-
-if ($tagFilter !== '' && $hasTagTbl) {
-    $where[] = 'EXISTS (SELECT 1 FROM note_tag_assignments nta JOIN note_tags_catalog tc ON tc.id = nta.tag_id WHERE nta.note_id = n.id AND tc.label = :tag_label)';
-    $params[':tag_label'] = $tagFilter;
-}
-
-$photoCountExpr   = $hasPhotosTbl ? '(SELECT COUNT(*) FROM note_photos p WHERE p.note_id = n.id) AS photo_count' : '0 AS photo_count';
-$commentCountExpr = $hasCommentsTbl ? '(SELECT COUNT(*) FROM note_comments c WHERE c.note_id = n.id) AS comment_count' : '0 AS comment_count';
-
-$selectParts = [
-    'n.*',
-    '(n.user_id = :me_owner_select) AS is_owner',
-    $isSharedExpr,
-    $photoCountExpr,
-    $commentCountExpr,
-];
-$params[':me_owner_select'] = $meId;
-
-$joins = '';
-if ($hasMetaTbl) {
-    $selectParts[] = 'npm.icon AS meta_icon';
-    $selectParts[] = 'npm.cover_url AS meta_cover_url';
-    $selectParts[] = 'npm.status AS meta_status';
-    $selectParts[] = 'npm.properties AS meta_properties';
-    $joins .= ' LEFT JOIN note_pages_meta npm ON npm.note_id = n.id';
-}
-
-$whereSql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
-
-$orderParts = [];
-if ($hasNoteDate) {
-    $orderParts[] = 'n.note_date DESC';
-}
-if ($hasUpdatedAt) {
-    $orderParts[] = 'n.updated_at DESC';
-}
-if ($hasCreatedAt) {
-    $orderParts[] = 'n.created_at DESC';
-}
-$orderParts[] = 'n.id DESC';
-$orderSql = ' ORDER BY ' . implode(', ', $orderParts) . ' LIMIT 200';
-
-$sql = 'SELECT ' . implode(",
-          ", $selectParts) . "
-        FROM notes n
-        {$joins}
-        {$whereSql}
-        {$orderSql}";
-
-$rows = [];
-try {
-    $st = $pdo->prepare($sql);
-    $st->execute($params);
-    $rows = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
-} catch (Throwable $e) {
-    error_log('Notes index query failed: ' . $e->getMessage());
-    $rows = [];
-}
-unset($row);
-
-$noteIds = array_map(static fn(array $row) => (int)($row['id'] ?? 0), $rows);
-$noteIds = array_values(array_filter($noteIds));
-$tagsMap = $noteIds ? notes_fetch_tags_for_notes($noteIds) : [];
-
-$shareMap = [];
-$shareLabels = [];
-if ($noteIds) {
-    $shareCol = notes__shares_column($pdo);
-    if ($shareCol) {
-        $placeholders = implode(',', array_fill(0, count($noteIds), '?'));
-        $sqlShares = "SELECT note_id, {$shareCol} AS user_id FROM notes_shares WHERE note_id IN ($placeholders)";
-        $stShares = $pdo->prepare($sqlShares);
-        $stShares->execute($noteIds);
-        $userIds = [];
-        while ($shareRow = $stShares->fetch(PDO::FETCH_ASSOC)) {
-            $nid = (int)($shareRow['note_id'] ?? 0);
-            $uid = (int)($shareRow['user_id'] ?? 0);
-            if ($nid <= 0 || $uid <= 0) {
-                continue;
-            }
-            $shareMap[$nid] = $shareMap[$nid] ?? [];
-            if (!in_array($uid, $shareMap[$nid], true)) {
-                $shareMap[$nid][] = $uid;
-                $userIds[] = $uid;
-            }
-        }
-        if ($userIds) {
-            $shareLabels = notes_fetch_users_map(array_unique($userIds));
-        }
-    }
-}
-
-foreach ($rows as &$row) {
-    $noteId = (int)($row['id'] ?? 0);
-    $metaData = [
-        'icon'       => null,
-        'cover_url'  => null,
-        'status'     => NOTES_DEFAULT_STATUS,
-        'properties' => notes_default_properties(),
-    ];
-    if ($hasMetaTbl) {
-        if (isset($row['meta_icon']) && $row['meta_icon'] !== '') {
-            $metaData['icon'] = $row['meta_icon'];
-        }
-        if (isset($row['meta_cover_url']) && $row['meta_cover_url'] !== '') {
-            $metaData['cover_url'] = $row['meta_cover_url'];
-        }
-        if (isset($row['meta_status']) && $row['meta_status'] !== '') {
-            $metaData['status'] = notes_normalize_status($row['meta_status']);
-        }
-        if (!empty($row['meta_properties'])) {
-            $decoded = json_decode((string)$row['meta_properties'], true);
-            $metaData['properties'] = notes_normalize_properties($decoded);
-        }
-    }
-    $row['_meta']        = $metaData;
-    $row['_status']      = $metaData['status'];
-    $row['_properties']  = $metaData['properties'];
-    $row['_tags']        = $tagsMap[$noteId] ?? [];
-    $row['_share_ids']   = $shareMap[$noteId] ?? [];
-    $row['_share_labels']= array_map(
-        static fn($id) => $shareLabels[$id] ?? ('User #' . $id),
-        $row['_share_ids']
-    );
-    $row['_share_count'] = count($row['_share_ids']);
-    $row['_owner_label'] = notes_user_label((int)($row['user_id'] ?? 0));
-    $row['_excerpt']     = notes__excerpt((string)($row['body'] ?? ''), 220);
-
-    $timestamp = $row['updated_at'] ?? $row['created_at'] ?? $row['note_date'] ?? null;
-    $row['_updated_relative'] = $timestamp ? notes__relative_time((string)$timestamp) : '';
-    $row['_updated_absolute'] = '';
-    if ($timestamp) {
-        try {
-            $row['_updated_absolute'] = (new DateTimeImmutable((string)$timestamp))->format('Y-m-d H:i');
-        } catch (Throwable $e) {
-            $row['_updated_absolute'] = (string)$timestamp;
-        }
-    }
-    $row['_can_share']   = notes_can_share($row);
-    $row['_payload'] = [
-        'id'            => $noteId,
-        'title'         => trim((string)($row['title'] ?? '')) ?: 'Untitled',
-        'status'        => $row['_status'],
-        'statusLabel'   => notes_status_label($row['_status']),
-        'statusBadge'   => notes_status_badge_class($row['_status']),
-        'icon'          => $metaData['icon'],
-        'coverUrl'      => $metaData['cover_url'],
-        'excerpt'       => $row['_excerpt'],
-        'ownerId'       => (int)($row['user_id'] ?? 0),
-        'ownerLabel'    => $row['_owner_label'],
-        'isOwner'       => !empty($row['is_owner']),
-        'isShared'      => !empty($row['is_shared']) && empty($row['is_owner']),
-        'properties'    => $metaData['properties'],
-        'tags'          => array_map(static function ($tag) {
-            return [
-                'label' => (string)($tag['label'] ?? ''),
-                'color' => (string)($tag['color'] ?? ''),
-            ];
-        }, $row['_tags']),
-        'shareIds'      => $row['_share_ids'],
-        'shareLabels'   => $row['_share_labels'],
-        'shareCount'    => $row['_share_count'],
-        'photoCount'    => (int)($row['photo_count'] ?? 0),
-        'commentCount'  => (int)($row['comment_count'] ?? 0),
-        'noteDate'      => $row['note_date'] ?? null,
-        'noteDateFormatted' => notes__format_date($row['note_date'] ?? ''),
-        'updatedRelative'=> $row['_updated_relative'],
-        'updatedAbsolute'=> $row['_updated_absolute'],
-        'canShare'      => $row['_can_share'],
-        'links'         => [
-            'view' => 'view.php?id=' . $noteId,
-            'edit' => 'edit.php?id=' . $noteId,
-        ],
-    ];
-}
-unset($row);
-
-$focusId = isset($_GET['note']) ? (int)$_GET['note'] : 0;
-$activeNote = null;
-foreach ($rows as $candidate) {
-    if ($focusId > 0 && (int)($candidate['id'] ?? 0) === $focusId) {
-        $activeNote = $candidate;
-        break;
-    }
-}
-if ($activeNote === null && $rows) {
-    $activeNote = $rows[0];
-}
-
-$activeNoteComments = [];
-$activeNotePhotos   = [];
-if ($activeNote) {
-    $activeNoteId = (int)($activeNote['id'] ?? 0);
-    if ($activeNoteId > 0) {
-        if ($hasCommentsTbl) {
-            $activeNoteComments = notes_fetch_comment_threads($activeNoteId);
-        }
-        if ($hasPhotosTbl) {
-            $activeNotePhotos = notes_fetch_photos($activeNoteId);
-        }
-    }
-}
-
-$totalNotes       = count($rows);
-$ownedCount       = 0;
-$sharedCount      = 0;
-$photoRichCount   = 0;
-$commentRichCount = 0;
-$photoTotal       = 0;
-$latestTimestamp  = null;
-$statusCounts     = array_fill_keys(array_keys($statuses), 0);
-
-foreach ($rows as $row) {
-    $isOwner  = !empty($row['is_owner']);
-    $isShared = !empty($row['is_shared']) && !$isOwner;
-    if ($isOwner) {
-        $ownedCount++;
-    }
-    if ($isShared) {
-        $sharedCount++;
-    }
-    $pc = (int)($row['photo_count'] ?? 0);
-    $cc = (int)($row['comment_count'] ?? 0);
-    if ($pc > 0) {
-        $photoRichCount++;
-    }
-    if ($cc > 0) {
-        $commentRichCount++;
-    }
-    $photoTotal += $pc;
-
-    $status = $row['_status'] ?? NOTES_DEFAULT_STATUS;
-    if (!isset($statusCounts[$status])) {
-        $statusCounts[$status] = 0;
-    }
-    $statusCounts[$status]++;
-
-    $candidateTimestamp = $row['updated_at'] ?? $row['created_at'] ?? $row['note_date'] ?? null;
-    if ($candidateTimestamp !== null) {
-        if ($latestTimestamp === null || strcmp((string)$candidateTimestamp, (string)$latestTimestamp) > 0) {
-            $latestTimestamp = (string)$candidateTimestamp;
-        }
-    }
-}
-
-$avgPhotos        = $totalNotes > 0 ? $photoTotal / $totalNotes : 0.0;
-$avgPhotosRounded = $avgPhotos > 0 ? round($avgPhotos, 1) : 0.0;
-$percentOwned     = $totalNotes > 0 ? round(($ownedCount / $totalNotes) * 100) : 0;
-$percentShared    = $totalNotes > 0 ? round(($sharedCount / $totalNotes) * 100) : 0;
-$activeCount      = $totalNotes - ($statusCounts['archived'] ?? 0);
-$completedCount   = $statusCounts['complete'] ?? 0;
-$inProgressCount  = $statusCounts['in_progress'] ?? 0;
-$reviewCount      = $statusCounts['review'] ?? 0;
-$blockedCount     = $statusCounts['blocked'] ?? 0;
-
-$lastUpdatedRelative = $latestTimestamp ? notes__relative_time($latestTimestamp) : '';
-$lastUpdatedAbsolute = '';
-if ($latestTimestamp) {
-    try {
-        $lastUpdatedAbsolute = (new DateTimeImmutable($latestTimestamp))->format('Y-m-d H:i');
-    } catch (Throwable $e) {
-        $lastUpdatedAbsolute = (string)$latestTimestamp;
-    }
-}
-
-$statusColumns = [];
-foreach ($statuses as $slug => $label) {
-    $statusColumns[$slug] = [];
-}
-foreach ($rows as $row) {
-    $slug = $row['_status'] ?? NOTES_DEFAULT_STATUS;
-    if (!isset($statusColumns[$slug])) {
-        $statusColumns[$slug] = [];
-    }
-    $statusColumns[$slug][] = $row;
-}
-
-$tagDirectory = [];
-foreach ($rows as $row) {
-    $tagList = $row['_tags'] ?? [];
-    if (!$tagList) {
+foreach ($templates as $tplRow) {
+    $tplId = (int)($tplRow['id'] ?? 0);
+    if ($tplId <= 0) {
         continue;
     }
-    foreach ($tagList as $tag) {
-        $label = trim((string)($tag['label'] ?? ''));
-        if ($label === '') {
-            continue;
-        }
-        if (!isset($tagDirectory[$label])) {
-            $tagDirectory[$label] = [
-                'label' => $label,
-                'color' => (string)($tag['color'] ?? ''),
-                'count' => 0,
-            ];
-        }
-        $tagDirectory[$label]['count']++;
-        if (!empty($tag['color'])) {
-            $tagDirectory[$label]['color'] = (string)$tag['color'];
-        }
+    $tplShares = notes_get_template_share_user_ids($tplId);
+    $templateShareSelections[$tplId] = $tplShares;
+    foreach ($tplShares as $sid) {
+        $shareIds[] = (int)$sid;
     }
 }
-if ($tagDirectory) {
-    uasort($tagDirectory, static function ($a, $b) {
-        return strcasecmp($a['label'], $b['label']);
-    });
-}
+$shareMap = notes_fetch_users_map($shareIds);
 
-$tagOptions = notes_all_tag_options();
-$lastUpdateHint = $lastUpdatedRelative !== ''
-    ? 'Updated ' . $lastUpdatedRelative
-    : 'Waiting for first update';
-
-$templates       = notes_fetch_templates_for_user($meId);
-$ownedTemplates  = [];
-$sharedTemplates = [];
-foreach ($templates as $template) {
-    $templateId = (int)($template['id'] ?? 0);
-    $details    = $templateId > 0 ? notes_template_share_details($templateId) : [];
-    $shareIds   = array_map(static fn($share) => (int)($share['id'] ?? 0), $details);
-    $shareLabels= array_map(static fn($share) => (string)($share['label'] ?? ''), $details);
-    $normalized = $template;
-    $normalized['share_details'] = $details;
-    $normalized['share_ids']     = $shareIds;
-    $normalized['share_labels']  = $shareLabels;
-    $normalized['owner_label']   = notes_user_label((int)($template['owner_id'] ?? ($template['user_id'] ?? 0)));
-    $normalized['payload']       = [
-        'id'          => $templateId,
-        'name'        => (string)($template['name'] ?? ''),
-        'title'       => (string)($template['title'] ?? ''),
-        'icon'        => $template['icon'] ?? null,
-        'coverUrl'    => $template['coverUrl'] ?? null,
-        'status'      => $template['status'] ?? NOTES_DEFAULT_STATUS,
-        'statusLabel' => notes_status_label($template['status'] ?? NOTES_DEFAULT_STATUS),
-        'properties'  => $template['properties'] ?? notes_default_properties(),
-        'tags'        => $template['tags'] ?? [],
-        'shareIds'    => $shareIds,
-        'shareLabels' => $shareLabels,
-        'ownerId'     => (int)($template['owner_id'] ?? ($template['user_id'] ?? 0)),
-        'ownerLabel'  => $normalized['owner_label'],
-        'isOwner'     => !empty($template['is_owner']),
-        'sharedFrom'  => $template['shared_from'] ?? null,
-    ];
-    if (!empty($template['is_owner'])) {
-        $ownedTemplates[] = $normalized;
+function notes_render_note_snippet(array $note): string
+{
+    $plain = trim(strip_tags((string)($note['body'] ?? '')));
+    if ($plain === '') {
+        return 'No description yet.';
+    }
+    if (function_exists('mb_substr')) {
+        $snippet = mb_substr($plain, 0, 160, 'UTF-8');
     } else {
-        $sharedTemplates[] = $normalized;
+        $snippet = substr($plain, 0, 160);
     }
-}
-
-$shareOptions = [];
-foreach (notes_all_users() as $user) {
-    $uid = (int)($user['id'] ?? 0);
-    if ($uid <= 0) {
-        continue;
+    if (strlen($plain) > strlen($snippet)) {
+        $snippet .= '…';
     }
-    $label = trim((string)($user['email'] ?? ''));
-    if ($label === '') {
-        $label = 'User #' . $uid;
-    }
-    $shareOptions[] = [
-        'id'    => $uid,
-        'label' => $label,
-    ];
+    return htmlspecialchars($snippet, ENT_QUOTES, 'UTF-8');
 }
 
 $csrfToken = csrf_token();
-
-$propertyLabels = notes_property_labels();
-
-$title = 'Notes';
-include __DIR__ . '/../includes/header.php';
+$today     = date('Y-m-d');
 ?>
-
-
-<section class="obsidian-shell" data-theme="obsidian" data-index-shell data-csrf="<?php echo  sanitize($csrfToken); ?>">
-  <div class="amanote-grid">
-    <aside class="amanote-rail">
-      <div class="amanote-rail__brand">
-        <span class="amanote-rail__glyph">🧠</span>
-        <div>
-          <strong>Amanote hub</strong>
-          <small>Study spaces</small>
-        </div>
-      </div>
-      <nav class="amanote-rail__statuses">
-        <?php foreach ($statuses as $slug => $label): ?>
-          <?php $count = count($statusColumns[$slug] ?? []); ?>
-          <?php $isActive = $statusFilter === $slug; ?>
-          <?php $statusUrl = 'index.php?status=' . urlencode($slug); ?>
-          <a class="amanote-rail__status<?php echo  $isActive ? ' is-active' : ''; ?>" href="<?php echo  $isActive ? 'index.php' : sanitize($statusUrl); ?>">
-            <span class="amanote-rail__icon"><?php echo  sanitize($statusIcons[$slug] ?? '📌'); ?></span>
-            <div>
-              <strong><?php echo  sanitize($label); ?></strong>
-              <small><?php echo  number_format($count); ?> notes</small>
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Notes workspace</title>
+    <style>
+        :root {
+            color-scheme: only light;
+            --notes-bg: #f9fafb;
+            --notes-sidebar: #ffffff;
+            --notes-surface: #ffffff;
+            --notes-border: #e5e7eb;
+            --notes-text: #111827;
+            --notes-muted: #6b7280;
+            --notes-accent: #2563eb;
+            --notes-accent-soft: rgba(37, 99, 235, 0.12);
+            --notes-danger: #dc2626;
+            --notes-radius: 12px;
+            font-family: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            background: var(--notes-bg);
+            color: var(--notes-text);
+        }
+        a { color: inherit; text-decoration: none; }
+        .notes-shell {
+            display: grid;
+            grid-template-columns: 280px 1fr;
+            min-height: 100vh;
+        }
+        .notes-sidebar {
+            background: var(--notes-sidebar);
+            border-right: 1px solid var(--notes-border);
+            padding: 24px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+        .brand {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .brand__title {
+            font-size: 1.125rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .brand__title span.icon {
+            display: inline-flex;
+            width: 32px;
+            height: 32px;
+            border-radius: 10px;
+            align-items: center;
+            justify-content: center;
+            background: var(--notes-accent-soft);
+            color: var(--notes-accent);
+            font-weight: 600;
+        }
+        .stack {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            border: 1px solid transparent;
+            background: var(--notes-accent);
+            color: #fff;
+            border-radius: 10px;
+            padding: 10px 14px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }
+        .button:focus-visible {
+            outline: 2px solid var(--notes-accent);
+            outline-offset: 2px;
+        }
+        .button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 8px 16px rgba(37, 99, 235, 0.18);
+        }
+        .button--ghost {
+            background: transparent;
+            color: var(--notes-accent);
+            border-color: rgba(37, 99, 235, 0.32);
+            box-shadow: none;
+        }
+        .button--subtle {
+            background: rgba(15, 23, 42, 0.04);
+            color: var(--notes-text);
+            border-color: rgba(15, 23, 42, 0.08);
+            box-shadow: none;
+        }
+        .button--danger {
+            background: var(--notes-danger);
+            border-color: var(--notes-danger);
+        }
+        .notes-sidebar__section {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .notes-sidebar__heading {
+            font-size: 0.75rem;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--notes-muted);
+            font-weight: 600;
+        }
+        .template-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .template-card {
+            padding: 12px 14px;
+            border-radius: 10px;
+            border: 1px solid var(--notes-border);
+            background: var(--notes-surface);
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .template-card__name {
+            font-weight: 600;
+            font-size: 0.95rem;
+        }
+        .template-card__meta {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.75rem;
+            color: var(--notes-muted);
+        }
+        .template-card__actions {
+            display: flex;
+            gap: 8px;
+        }
+        .notes-main {
+            padding: 32px 40px;
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+        header.notes-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 16px;
+        }
+        .notes-header__title {
+            display: flex;
+            flex-direction: column;
+        }
+        .notes-header__title h1 {
+            margin: 0;
+            font-size: 1.8rem;
+        }
+        .notes-header__title span {
+            font-size: 0.9rem;
+            color: var(--notes-muted);
+        }
+        .search-box {
+            position: relative;
+            width: 260px;
+        }
+        .search-box input {
+            width: 100%;
+            border: 1px solid var(--notes-border);
+            border-radius: 12px;
+            padding: 10px 14px;
+            font-size: 0.95rem;
+            background: var(--notes-surface);
+            color: var(--notes-text);
+        }
+        .search-box input::placeholder {
+            color: var(--notes-muted);
+        }
+        .notes-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 18px;
+        }
+        .note-card {
+            background: var(--notes-surface);
+            border-radius: var(--notes-radius);
+            padding: 18px;
+            border: 1px solid var(--notes-border);
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            position: relative;
+            min-height: 200px;
+        }
+        .note-card__head {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+        }
+        .note-card__icon {
+            width: 36px;
+            height: 36px;
+            border-radius: 10px;
+            background: rgba(15, 23, 42, 0.05);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+        }
+        .note-card__title {
+            margin: 0;
+            font-size: 1.05rem;
+            font-weight: 600;
+            line-height: 1.3;
+        }
+        .note-card__meta {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            font-size: 0.75rem;
+            color: var(--notes-muted);
+        }
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            letter-spacing: 0.03em;
+        }
+        .badge--status {
+            background: rgba(37, 99, 235, 0.12);
+            color: var(--notes-accent);
+        }
+        .badge--priority {
+            background: rgba(34, 197, 94, 0.14);
+            color: #047857;
+        }
+        .note-card__body {
+            font-size: 0.9rem;
+            color: var(--notes-muted);
+            line-height: 1.5;
+        }
+        .tag-chip {
+            display: inline-flex;
+            align-items: center;
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            margin: 2px 6px 2px 0;
+        }
+        .note-card__footer {
+            margin-top: auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+        }
+        .note-card__footer-actions {
+            display: flex;
+            gap: 8px;
+        }
+        .note-card__shares {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+        .avatar-chip {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            background: rgba(15, 23, 42, 0.08);
+            color: var(--notes-text);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .note-card__empty {
+            padding: 40px;
+            text-align: center;
+            color: var(--notes-muted);
+            border: 1px dashed var(--notes-border);
+            border-radius: var(--notes-radius);
+        }
+        .flash {
+            padding: 12px 16px;
+            border-radius: 12px;
+            font-size: 0.95rem;
+        }
+        .flash-success {
+            background: rgba(34, 197, 94, 0.12);
+            color: #047857;
+        }
+        .flash-error {
+            background: rgba(220, 38, 38, 0.14);
+            color: #b91c1c;
+        }
+        .modal {
+            position: fixed;
+            inset: 0;
+            background: rgba(15, 23, 42, 0.24);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            z-index: 1000;
+        }
+        .modal--visible {
+            display: flex;
+        }
+        .modal__panel {
+            background: #fff;
+            border-radius: 18px;
+            max-width: 520px;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 24px 60px rgba(15, 23, 42, 0.24);
+        }
+        .modal__header {
+            padding: 20px 24px 0;
+        }
+        .modal__header h2 {
+            margin: 0;
+            font-size: 1.2rem;
+        }
+        .modal__body {
+            padding: 16px 24px 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .modal__footer {
+            padding: 16px 24px 24px;
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+        }
+        .modal__close {
+            background: none;
+            border: none;
+            font-size: 1rem;
+            cursor: pointer;
+            color: var(--notes-muted);
+        }
+        .field {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .field label {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--notes-muted);
+        }
+        .field input,
+        .field textarea,
+        .field select {
+            border: 1px solid var(--notes-border);
+            border-radius: 10px;
+            padding: 10px 12px;
+            font-size: 0.95rem;
+            background: var(--notes-surface);
+        }
+        .share-picker {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            max-height: 260px;
+            overflow-y: auto;
+            border: 1px solid var(--notes-border);
+            border-radius: 12px;
+            padding: 12px;
+        }
+        .share-picker__item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .share-picker__item input {
+            width: 16px;
+            height: 16px;
+        }
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 0.7rem;
+            background: rgba(37, 99, 235, 0.1);
+            color: var(--notes-accent);
+            gap: 6px;
+        }
+        .note-counter {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--notes-muted);
+            font-size: 0.8rem;
+        }
+        @media (max-width: 1100px) {
+            .notes-shell {
+                grid-template-columns: 1fr;
+            }
+            .notes-sidebar {
+                flex-direction: row;
+                overflow-x: auto;
+                gap: 16px;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="notes-shell">
+    <aside class="notes-sidebar">
+        <div class="brand">
+            <div class="brand__title"><span class="icon">✦</span>Atlas Notes</div>
+            <div class="brand__subtitle" style="font-size:0.85rem;color:var(--notes-muted);">Signed in as <?= $meEmail ?></div>
+            <div class="stack">
+                <a class="button" href="new.php">✚ New note</a>
+                <button class="button button--subtle" data-modal-open="quick-note">Quick capture</button>
             </div>
-          </a>
-        <?php endforeach; ?>
-      </nav>
-      <div class="amanote-rail__tags">
-        <div class="amanote-rail__tags-head">
-          <h3>Spaces</h3>
-          <?php if ($tagFilter !== ''): ?>
-            <a class="amanote-rail__clear" href="index.php">Clear</a>
-          <?php endif; ?>
         </div>
-        <?php if ($tagDirectory): ?>
-          <ul>
-            <?php foreach ($tagDirectory as $tag): ?>
-              <?php $tagLabel = (string)($tag['label'] ?? ''); ?>
-              <?php $tagColor = (string)($tag['color'] ?? ''); ?>
-              <?php $tagCount = (int)($tag['count'] ?? 0); ?>
-              <?php $tagUrl = 'index.php?tag=' . urlencode($tagLabel); ?>
-              <li>
-                <a class="amanote-rail__tag<?php echo  $tagFilter === $tagLabel ? ' is-active' : ''; ?>" href="<?php echo  sanitize($tagUrl); ?>">
-                  <span class="amanote-rail__dot" style="--tag-color: <?php echo  sanitize($tagColor ?: '#2563eb'); ?>"></span>
-                  <span><?php echo  sanitize($tagLabel); ?></span>
-                  <small><?php echo  number_format($tagCount); ?></small>
-                </a>
-              </li>
-            <?php endforeach; ?>
-          </ul>
-        <?php else: ?>
-          <p class="amanote-rail__empty">Tag your notes to build quick navigation.</p>
-        <?php endif; ?>
-      </div>
-      <button type="button" class="amanote-rail__quick" data-quick-open>+ Quick note</button>
-    </aside>
-    <div class="amanote-main">
-      <header class="obsidian-header">
-        <div class="obsidian-header__titles">
-          <span class="obsidian-header__eyebrow">Lecture notebook</span>
-          <h1>Amanote workspace</h1>
-          <p class="obsidian-header__subtitle">Capture slides, annotate highlights, and collaborate with your team.</p>
-        </div>
-        <div class="obsidian-header__actions">
-          <button type="button" class="obsidian-header__command" data-command-open>⌘K Command palette</button>
-          <button type="button" class="obsidian-header__quick" data-quick-open>Quick capture</button>
-          <a class="btn obsidian-header__new" href="new.php">New note</a>
-        </div>
-      </header>
-      <div class="obsidian-layout">
-    <aside class="obsidian-sidebar">
-      <form method="get" action="index.php" class="obsidian-search" autocomplete="off">
-        <label class="obsidian-search__field">
-          <span>Search vault</span>
-          <input type="search" name="q" value="<?php echo  sanitize($search); ?>" placeholder="Title, tag, or text">
-        </label>
-        <?php if ($statusFilter !== ''): ?>
-          <input type="hidden" name="status" value="<?php echo  sanitize($statusFilter); ?>">
-        <?php endif; ?>
-        <?php if ($tagFilter !== ''): ?>
-          <input type="hidden" name="tag" value="<?php echo  sanitize($tagFilter); ?>">
-        <?php endif; ?>
-        <div class="obsidian-search__meta">
-          <span class="obsidian-search__hint">Press <kbd>/</kbd> to focus search</span>
-          <div class="obsidian-search__meta-actions">
-            <?php if ($statusFilter !== ''): ?>
-              <span class="obsidian-search__chip">Status: <?php echo  sanitize($statuses[$statusFilter] ?? notes_status_label($statusFilter)); ?></span>
-            <?php endif; ?>
-            <?php if ($tagFilter !== ''): ?>
-              <span class="obsidian-search__chip">Tag: <?php echo  sanitize($tagFilter); ?></span>
-            <?php endif; ?>
-            <?php if ($search !== '' || $statusFilter !== '' || $tagFilter !== ''): ?>
-              <a class="obsidian-search__reset" href="index.php">Clear filters</a>
-            <?php endif; ?>
-          </div>
-        </div>
-      </form>
-      <div class="obsidian-summary">
-        <div data-summary-total><span>Total notes</span><strong><?php echo  number_format($totalNotes); ?></strong></div>
-        <div data-summary-shared><span>Shared</span><strong><?php echo  number_format($sharedCount); ?></strong></div>
-        <div data-summary-comments><span>Comments</span><strong><?php echo  number_format($commentRichCount); ?></strong></div>
-        <div data-summary-photos><span>Photos</span><strong><?php echo  number_format($photoRichCount); ?></strong></div>
-        <div data-summary-updated><span>Updated</span><strong><?php echo  sanitize($lastUpdateHint); ?></strong></div>
-      </div>
-      <div class="obsidian-statuses">
-        <h2>Status lanes</h2>
-        <ul>
-          <?php foreach ($statuses as $slug => $label): ?>
-            <li>
-              <span class="badge <?php echo  sanitize(notes_status_badge_class($slug)); ?>"><?php echo  sanitize($label); ?></span>
-              <span><?php echo  number_format(count($statusColumns[$slug] ?? [])); ?></span>
-            </li>
-          <?php endforeach; ?>
-        </ul>
-      </div>
-      <div class="obsidian-templates">
-        <header>
-          <h2>Templates</h2>
-          <p>Capture repeatable note layouts.</p>
-        </header>
-        <?php if ($ownedTemplates): ?>
-          <h3>My templates</h3>
-          <ul>
-            <?php foreach ($ownedTemplates as $tpl): ?>
-              <?php
-                $tplId   = (int)($tpl['id'] ?? 0);
-                $tplName = trim((string)($tpl['name'] ?? 'Untitled'));
-                $tplIcon = trim((string)($tpl['icon'] ?? ''));
-                $tplDisplayIcon = $tplIcon !== '' ? $tplIcon : '📄';
-                $tplPayload = htmlspecialchars(json_encode($tpl['payload'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), ENT_QUOTES, 'UTF-8');
-              ?>
-              <li class="obsidian-template" data-template-id="<?php echo  $tplId; ?>">
-                <div class="obsidian-template__row">
-                  <a class="obsidian-template__apply" href="new.php?template=<?php echo  $tplId; ?>">
-                    <span class="obsidian-template__icon"><?php echo  sanitize($tplDisplayIcon); ?></span>
-                    <span>
-                      <strong><?php echo  sanitize($tplName); ?></strong>
-                      <?php if (!empty($tpl['title'])): ?><em><?php echo  sanitize($tpl['title']); ?></em><?php endif; ?>
-                    </span>
-                  </a>
-                  <button type="button" class="obsidian-template__share" data-template-share-button="<?php echo  $tplId; ?>" data-template-share="<?php echo  $tplPayload; ?>">Share</button>
-                </div>
-                <div class="obsidian-template__sharelist" data-template-share-list="<?php echo  $tplId; ?>">
-                  <?php if (!empty($tpl['share_labels'])): ?>
-                    <?php foreach ($tpl['share_labels'] as $label): ?>
-                      <span class="obsidian-pill"><?php echo  sanitize($label); ?></span>
+
+        <div class="notes-sidebar__section">
+            <div class="notes-sidebar__heading">Templates</div>
+            <div class="template-list">
+                <?php if (!$templates): ?>
+                    <div class="template-card">
+                        <div class="template-card__name">No templates yet</div>
+                        <div class="template-card__meta">Create one from a note to reuse layouts.</div>
+                        <div class="template-card__actions">
+                            <a class="button button--ghost" href="new.php">Create note</a>
+                        </div>
+                    </div>
+                <?php else: ?>
+                    <?php foreach ($templates as $tpl):
+                        $tplId   = (int)($tpl['id'] ?? 0);
+                        $tplName = htmlspecialchars((string)($tpl['name'] ?? 'Untitled template'), ENT_QUOTES, 'UTF-8');
+                        $tplOwner = notes_user_label((int)($tpl['owner_id'] ?? 0));
+                        $tplOwnerHtml = htmlspecialchars($tplOwner, ENT_QUOTES, 'UTF-8');
+                        $tplConfig = htmlspecialchars(json_encode([
+                            'templateId' => $tplId,
+                            'selected'   => $templateShareSelections[$tplId] ?? [],
+                            'owner'      => (int)($tpl['owner_id'] ?? 0),
+                        ], JSON_UNESCAPED_UNICODE), ENT_QUOTES, 'UTF-8');
+                        $shareCount = (int)($tpl['share_count'] ?? 0);
+                        ?>
+                        <div class="template-card" data-template-id="<?= $tplId ?>">
+                            <div class="template-card__name"><?= $tplName ?></div>
+                            <div class="template-card__meta">
+                                <span><?= $tpl['is_owner'] ? 'You own this' : ('Shared by ' . $tplOwnerHtml) ?></span>
+                                <span><?= $shareCount ?> shared</span>
+                            </div>
+                            <div class="template-card__actions">
+                                <a class="button button--ghost" href="new.php?template_id=<?= $tplId ?>">Use</a>
+                                <?php if (notes_template_can_share($tpl, $meId)): ?>
+                                    <button class="button button--subtle" data-modal-open="template-share" data-share-config="<?= $tplConfig ?>">Share</button>
+                                <?php endif; ?>
+                            </div>
+                        </div>
                     <?php endforeach; ?>
-                  <?php else: ?>
-                    <span class="obsidian-pill is-muted">Private</span>
-                  <?php endif; ?>
-                </div>
-              </li>
-            <?php endforeach; ?>
-          </ul>
-        <?php else: ?>
-          <p class="obsidian-template__empty">Save a note as a template to jump-start new pages.</p>
-        <?php endif; ?>
-        <?php if ($sharedTemplates): ?>
-          <h3>Shared with me</h3>
-          <ul>
-            <?php foreach ($sharedTemplates as $tpl): ?>
-              <?php
-                $tplId   = (int)($tpl['id'] ?? 0);
-                $tplName = trim((string)($tpl['name'] ?? 'Untitled'));
-                $tplIcon = trim((string)($tpl['icon'] ?? ''));
-                $tplDisplayIcon = $tplIcon !== '' ? $tplIcon : '📄';
-              ?>
-              <li class="obsidian-template obsidian-template--shared" data-template-id="<?php echo  $tplId; ?>">
-                <a class="obsidian-template__apply" href="new.php?template=<?php echo  $tplId; ?>">
-                  <span class="obsidian-template__icon"><?php echo  sanitize($tplDisplayIcon); ?></span>
-                  <span>
-                    <strong><?php echo  sanitize($tplName); ?></strong>
-                    <?php if (!empty($tpl['shared_from'])): ?><em>Shared by <?php echo  sanitize($tpl['shared_from']); ?></em><?php endif; ?>
-                  </span>
-                </a>
-              </li>
-            <?php endforeach; ?>
-          </ul>
-        <?php endif; ?>
-      </div>
+                <?php endif; ?>
+            </div>
+        </div>
     </aside>
-    <div class="obsidian-main">
-      <div class="obsidian-note-list" data-note-list>
-        <?php if (!$rows): ?>
-          <div class="obsidian-empty">
-            <p>No notes yet.</p>
-            <a class="btn obsidian-primary" href="new.php">Create a note</a>
-          </div>
-        <?php else: ?>
-          <?php foreach ($rows as $note): ?>
-            <?php
-              $noteId = (int)($note['id'] ?? 0);
-              $payloadJson = htmlspecialchars(json_encode($note['_payload'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), ENT_QUOTES, 'UTF-8');
-              $title = trim((string)($note['title'] ?? ''));
-              if ($title === '') { $title = 'Untitled'; }
-              $icon = trim((string)($note['_meta']['icon'] ?? ''));
-              if ($icon === '') {
-                  $firstChar = function_exists('mb_substr') ? mb_substr($title, 0, 1, 'UTF-8') : substr($title, 0, 1);
-                  $icon = $firstChar !== '' ? strtoupper($firstChar) : '📝';
-              }
-              $status = $note['_status'] ?? NOTES_DEFAULT_STATUS;
-              $statusLabel = notes_status_label($status);
-              $statusClass = notes_status_badge_class($status);
-            ?>
-            <article class="obsidian-note<?php echo  ($activeNote && (int)$activeNote['id'] === $noteId) ? ' is-active' : ''; ?>" data-note-id="<?php echo  $noteId; ?>" data-note='<?php echo  $payloadJson; ?>' data-note-item>
-              <header class="obsidian-note__header">
-                <span class="obsidian-note__icon"><?php echo  sanitize($icon); ?></span>
-                <div class="obsidian-note__titles">
-                  <h3><?php echo  sanitize($title); ?></h3>
-                  <div class="obsidian-note__meta">
-                    <span class="badge <?php echo  sanitize($statusClass); ?>"><?php echo  sanitize($statusLabel); ?></span>
-                    <?php if ($note['_updated_relative']): ?>
-                      <span class="obsidian-note__timestamp"><?php echo  sanitize($note['_updated_relative']); ?></span>
-                    <?php endif; ?>
-                    <?php if (!empty($note['_is_shared'])): ?>
-                      <span class="obsidian-note__shared">Shared</span>
-                    <?php endif; ?>
-                  </div>
-                </div>
-                <div class="obsidian-note__counts">
-                  <span class="obsidian-note__pill" data-note-share-count="<?php echo  $noteId; ?>">👥 <?php echo  number_format($note['_share_count']); ?></span>
-                  <span class="obsidian-note__pill">💬 <?php echo  number_format((int)($note['comment_count'] ?? 0)); ?></span>
-                  <span class="obsidian-note__pill">📸 <?php echo  number_format((int)($note['photo_count'] ?? 0)); ?></span>
-                </div>
-              </header>
-              <?php if ($note['_excerpt']): ?>
-                <p class="obsidian-note__excerpt"><?php echo  sanitize($note['_excerpt']); ?></p>
-              <?php endif; ?>
-              <?php if ($note['_tags']): ?>
-                <div class="obsidian-note__tags">
-                  <?php foreach ($note['_tags'] as $tag): $color = $tag['color'] ?? '#6366F1'; ?>
-                    <span class="obsidian-tag" style="--tag-color: <?php echo  sanitize($color); ?>"><?php echo  sanitize($tag['label'] ?? ''); ?></span>
-                  <?php endforeach; ?>
-                </div>
-              <?php endif; ?>
-            </article>
-          <?php endforeach; ?>
-        <?php endif; ?>
-      </div>
-    </div>
-    <aside class="obsidian-preview" data-note-preview>
-      <?php if ($activeNote): ?>
-        <?php
-          $payload = $activeNote['_payload'];
-          $previewTitle = trim((string)($payload['title'] ?? 'Untitled'));
-          if ($previewTitle === '') { $previewTitle = 'Untitled'; }
-          $previewIcon = trim((string)($payload['icon'] ?? ''));
-          if ($previewIcon === '') {
-              $firstChar = function_exists('mb_substr') ? mb_substr($previewTitle, 0, 1, 'UTF-8') : substr($previewTitle, 0, 1);
-              $previewIcon = $firstChar !== '' ? strtoupper($firstChar) : '📝';
-          }
-        ?>
-        <div class="obsidian-preview__scroll" data-active-note-id="<?php echo  (int)($payload['id'] ?? 0); ?>">
-          <div class="obsidian-preview__header">
-            <span class="obsidian-preview__icon" data-preview-icon><?php echo  sanitize($previewIcon); ?></span>
-            <div>
-              <span class="badge <?php echo  sanitize($payload['statusBadge']); ?>" data-preview-status><?php echo  sanitize($payload['statusLabel']); ?></span>
-              <h2 data-preview-title><?php echo  sanitize($previewTitle); ?></h2>
-              <?php if (!empty($payload['updatedRelative'])): ?>
-                <p class="obsidian-preview__timestamp">Updated <?php echo  sanitize($payload['updatedRelative']); ?></p>
-              <?php endif; ?>
+
+    <main class="notes-main">
+        <header class="notes-header">
+            <div class="notes-header__title">
+                <h1>Workspace</h1>
+                <span><?= count($notes) ?> notes, <?= count($templates) ?> templates</span>
             </div>
-          </div>
-          <div class="obsidian-preview__actions">
-            <a class="btn obsidian-primary" href="<?php echo  sanitize($payload['links']['view']); ?>" data-preview-view>Open note</a>
-            <a class="btn obsidian-btn" href="<?php echo  sanitize($payload['links']['edit']); ?>" data-preview-edit>Edit</a>
-            <?php if (!empty($payload['canShare'])): ?>
-              <button type="button" class="btn obsidian-btn--ghost" data-open-note-share="<?php echo  (int)($payload['id'] ?? 0); ?>">Manage access</button>
-            <?php endif; ?>
-          </div>
-          <dl class="obsidian-preview__meta">
-            <div>
-              <dt>Owner</dt>
-              <dd data-preview-owner><?php echo  sanitize($payload['ownerLabel']); ?></dd>
+            <div class="search-box">
+                <input type="search" id="notes-search" placeholder="Search notes" autocomplete="off">
             </div>
-            <div>
-              <dt>Photos</dt>
-              <dd data-preview-photos><?php echo  number_format((int)($payload['photoCount'] ?? 0)); ?></dd>
-            </div>
-            <div>
-              <dt>Comments</dt>
-              <dd data-preview-comments><?php echo  number_format((int)($payload['commentCount'] ?? 0)); ?></dd>
-            </div>
-            <div>
-              <dt>Note date</dt>
-              <dd data-preview-date><?php echo  sanitize(notes__format_date($payload['noteDate'] ?? '')); ?></dd>
-            </div>
-          </dl>
-          <div class="obsidian-preview__properties" data-preview-properties>
-            <?php foreach ($payload['properties'] as $key => $value): $value = trim((string)$value); if ($value === '') continue; ?>
-              <div><span><?php echo  sanitize($propertyLabels[$key] ?? ucfirst($key)); ?></span><strong><?php echo  sanitize($value); ?></strong></div>
-            <?php endforeach; ?>
-          </div>
-          <div class="obsidian-preview__tags" data-preview-tags>
-            <?php foreach ($payload['tags'] as $tag): $color = $tag['color'] ?? '#6366F1'; ?>
-              <span class="obsidian-tag" style="--tag-color: <?php echo  sanitize($color); ?>"><?php echo  sanitize($tag['label'] ?? ''); ?></span>
-            <?php endforeach; ?>
-          </div>
-          <div class="obsidian-preview__shares">
-            <h3>Collaborators</h3>
-            <div class="obsidian-preview__sharelist" data-preview-shares>
-              <?php if (!empty($payload['shareLabels'])): ?>
-                <?php foreach ($payload['shareLabels'] as $label): ?>
-                  <span class="obsidian-pill"><?php echo  sanitize($label); ?></span>
+        </header>
+
+        <?php flash_message(); ?>
+
+        <section class="notes-grid" id="notes-grid">
+            <?php if (!$notes): ?>
+                <div class="note-card__empty">No notes yet. Capture your first one!</div>
+            <?php else: ?>
+                <?php foreach ($notes as $note):
+                    $noteId     = (int)$note['id'];
+                    $titlePlain = $note['title'] !== '' ? (string)$note['title'] : 'Untitled note';
+                    $title      = htmlspecialchars($titlePlain, ENT_QUOTES, 'UTF-8');
+                    $dataTitlePlain = function_exists('mb_strtolower') ? mb_strtolower($titlePlain, 'UTF-8') : strtolower($titlePlain);
+                    $dataTitle = htmlspecialchars($dataTitlePlain, ENT_QUOTES, 'UTF-8');
+                    $status   = htmlspecialchars(notes_status_label($note['meta']['status'] ?? null), ENT_QUOTES, 'UTF-8');
+                    $priority = htmlspecialchars((string)($note['meta']['properties']['priority'] ?? ''), ENT_QUOTES, 'UTF-8');
+                    $noteDate = htmlspecialchars((string)($note['note_date'] ?? ''), ENT_QUOTES, 'UTF-8');
+                    $owner    = htmlspecialchars($note['owner_label'] ?? '', ENT_QUOTES, 'UTF-8');
+                    $shares   = $note['share_ids'];
+                    $shareConfig = htmlspecialchars(json_encode([
+                        'noteId'   => $noteId,
+                        'selected' => $shares,
+                        'owner'    => (int)$note['owner_id'],
+                    ], JSON_UNESCAPED_UNICODE), ENT_QUOTES, 'UTF-8');
+                    $comments = (int)$note['comment_count'];
+                    $iconChar = $note['meta']['icon'] ?? '';
+                    $iconChar = $iconChar !== '' ? $iconChar : '🗒️';
+                    $iconHtml = htmlspecialchars($iconChar, ENT_QUOTES, 'UTF-8');
+                    $noteRecord = ['id' => $noteId, 'user_id' => (int)$note['owner_id']];
+                    $canEdit  = notes_can_edit($noteRecord);
+                    $canShare = notes_can_share($noteRecord);
+                    ?>
+                    <article class="note-card" data-note-id="<?= $noteId ?>" data-note-title="<?= $dataTitle ?>">
+                        <div class="note-card__head">
+                            <div class="note-card__icon"><?= $iconHtml ?></div>
+                            <div class="note-card__head-inner" style="flex:1;">
+                                <h2 class="note-card__title"><?= $title ?></h2>
+                                <div class="note-card__meta">
+                                    <span><?= $noteDate ?: 'No date' ?></span>
+                                    <span>Owner · <?= $owner ?></span>
+                                    <span class="badge badge--status"><?= $status ?></span>
+                                    <?php if ($priority !== ''): ?>
+                                        <span class="badge badge--priority">Priority · <?= $priority ?></span>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="note-card__body"><?= notes_render_note_snippet($note) ?></div>
+                        <div>
+                            <?php foreach ($note['tags'] as $tag):
+                                $label = htmlspecialchars((string)($tag['label'] ?? ''), ENT_QUOTES, 'UTF-8');
+                                $color = htmlspecialchars((string)($tag['color'] ?? '#e5e7eb'), ENT_QUOTES, 'UTF-8');
+                                ?>
+                                <span class="tag-chip" style="background: <?= $color ?>20; color: <?= $color ?>; border: 1px solid <?= $color ?>33;">#<?= $label ?></span>
+                            <?php endforeach; ?>
+                        </div>
+                        <div class="note-card__footer">
+                            <div class="note-card__shares" data-share-target="<?= $noteId ?>">
+                                <span class="note-counter">💬 <?= $comments ?></span>
+                                <?php foreach ($shares as $uid):
+                                    $label = $shareMap[$uid] ?? ('User #' . $uid);
+                                    $initial = function_exists('mb_substr') ? mb_substr($label, 0, 2, 'UTF-8') : substr($label, 0, 2);
+                                    $initial = strtoupper($initial);
+                                    ?>
+                                    <span class="avatar-chip" title="<?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($initial, ENT_QUOTES, 'UTF-8') ?></span>
+                                <?php endforeach; ?>
+                            </div>
+                            <div class="note-card__footer-actions">
+                                <a class="button button--subtle" href="view.php?id=<?= $noteId ?>">Open</a>
+                                <?php if ($canEdit): ?>
+                                    <a class="button button--subtle" href="edit.php?id=<?= $noteId ?>">Edit</a>
+                                <?php endif; ?>
+                                <?php if ($canShare): ?>
+                                    <button class="button button--ghost" data-modal-open="note-share" data-share-config="<?= $shareConfig ?>">Share</button>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                    </article>
                 <?php endforeach; ?>
-              <?php else: ?>
-                <span class="obsidian-pill is-muted">Private</span>
-              <?php endif; ?>
+            <?php endif; ?>
+        </section>
+    </main>
+</div>
+
+<div class="modal" data-modal="quick-note">
+    <div class="modal__panel">
+        <div class="modal__header">
+            <h2>Quick capture</h2>
+        </div>
+        <form class="quick-note-form" method="post">
+            <div class="modal__body">
+                <input type="hidden" name="<?= CSRF_TOKEN_NAME ?>" value="<?= $csrfToken ?>">
+                <input type="hidden" name="quick_note" value="1">
+                <div class="field">
+                    <label for="quick-title">Title</label>
+                    <input id="quick-title" name="title" type="text" required maxlength="180" placeholder="Project kickoff notes">
+                </div>
+                <div class="field">
+                    <label for="quick-date">Date</label>
+                    <input id="quick-date" name="note_date" type="date" value="<?= $today ?>" required>
+                </div>
+                <div class="field">
+                    <label for="quick-status">Status</label>
+                    <select id="quick-status" name="status">
+                        <?php foreach ($statuses as $statusKey => $statusLabel): ?>
+                            <option value="<?= htmlspecialchars($statusKey, ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($statusLabel, ENT_QUOTES, 'UTF-8') ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="field">
+                    <label for="quick-tags">Tags</label>
+                    <input id="quick-tags" name="quick_tags" type="text" placeholder="product, research">
+                </div>
+                <div class="field">
+                    <label for="quick-body">Summary</label>
+                    <textarea id="quick-body" name="body" rows="4" placeholder="Highlights, ideas, todos…"></textarea>
+                </div>
             </div>
-          </div>
-        </div>
-      <?php else: ?>
-        <div class="obsidian-preview__empty">
-          <p>Select a note to see its details.</p>
-        </div>
-      <?php endif; ?>
-    </aside>
-      </div>
+            <div class="modal__footer">
+                <button type="button" class="modal__close" data-modal-close>Cancel</button>
+                <button type="submit" class="button">Save &amp; open</button>
+            </div>
+        </form>
     </div>
-  </div>
-</section>
+</div>
 
-<div class="obsidian-modal hidden" id="quickCaptureModal" data-modal>
-  <div class="obsidian-modal__overlay" data-modal-close></div>
-  <div class="obsidian-modal__dialog obsidian-modal__dialog--capture" role="dialog" aria-modal="true">
-    <header class="obsidian-modal__header">
-      <div>
-        <h3>Quick capture</h3>
-        <p class="obsidian-modal__subtitle">Draft a lightweight page without leaving the vault.</p>
-      </div>
-      <button type="button" class="obsidian-modal__close" data-modal-close>&times;</button>
-    </header>
-    <form method="post" class="obsidian-modal__form" data-quick-form autocomplete="off">
-      <input type="hidden" name="<?php echo  CSRF_TOKEN_NAME; ?>" value="<?php echo  sanitize($csrfToken); ?>">
-      <input type="hidden" name="quick_note" value="1">
-      <div class="obsidian-modal__body">
-        <label class="obsidian-field">
-          <span>Title</span>
-          <input type="text" name="title" required maxlength="180" placeholder="New note title">
-        </label>
-        <div class="obsidian-modal__grid">
-          <label class="obsidian-field">
-            <span>Status</span>
-            <select name="status">
-              <?php foreach ($statuses as $slug => $label): ?>
-                <option value="<?php echo  sanitize($slug); ?>"<?php echo  $slug === NOTES_DEFAULT_STATUS ? ' selected' : ''; ?>><?php echo  sanitize($label); ?></option>
-              <?php endforeach; ?>
-            </select>
-          </label>
-          <label class="obsidian-field">
-            <span>Date</span>
-            <input type="date" name="note_date" value="<?php echo  sanitize($today); ?>">
-          </label>
+<div class="modal" data-modal="note-share">
+    <div class="modal__panel">
+        <div class="modal__header">
+            <h2>Share note</h2>
         </div>
-        <div class="obsidian-modal__grid">
-          <label class="obsidian-field">
-            <span>Icon</span>
-            <input type="text" name="icon" maxlength="4" placeholder="📝">
-          </label>
-          <label class="obsidian-field">
-            <span>Cover URL</span>
-            <input type="url" name="cover_url" placeholder="https://example.com/cover.jpg">
-          </label>
+        <form class="share-form" method="post" data-share-form="note">
+            <div class="modal__body">
+                <input type="hidden" name="<?= CSRF_TOKEN_NAME ?>" value="<?= $csrfToken ?>">
+                <input type="hidden" name="update_note_shares" value="1">
+                <input type="hidden" name="note_id" value="">
+                <div class="field">
+                    <label for="note-share-filter">Find user</label>
+                    <input id="note-share-filter" type="search" placeholder="Search collaborators" data-share-filter>
+                </div>
+                <div class="share-picker" data-share-picker>
+                    <?php foreach ($users as $user):
+                        $uid = (int)($user['id'] ?? 0);
+                        $label = trim((string)($user['email'] ?? $user['name'] ?? 'User #' . $uid));
+                        $labelHtml = htmlspecialchars($label, ENT_QUOTES, 'UTF-8');
+                        ?>
+                        <label class="share-picker__item" data-share-user>
+                            <input type="checkbox" name="shared_ids[]" value="<?= $uid ?>">
+                            <span><?= $labelHtml ?></span>
+                        </label>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+            <div class="modal__footer">
+                <button type="button" class="modal__close" data-modal-close>Cancel</button>
+                <button type="submit" class="button">Save</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="modal" data-modal="template-share">
+    <div class="modal__panel">
+        <div class="modal__header">
+            <h2>Share template</h2>
         </div>
-        <label class="obsidian-field">
-          <span>Summary</span>
-          <textarea name="body" rows="3" placeholder="Outline the idea..."></textarea>
-        </label>
-        <label class="obsidian-field">
-          <span>Tags</span>
-          <input type="text" name="quick_tags" placeholder="design, sprint, review">
-        </label>
-        <label class="obsidian-modal__toggle">
-          <input type="checkbox" name="quick_open" value="1" checked>
-          <span>Open in editor after capturing</span>
-        </label>
-        <p class="obsidian-modal__status" data-quick-status role="alert"></p>
-      </div>
-      <div class="obsidian-modal__footer">
-        <button type="button" class="btn obsidian-btn--ghost" data-modal-close>Cancel</button>
-        <button type="submit" class="btn obsidian-primary">Capture note</button>
-      </div>
-    </form>
-  </div>
+        <form class="share-form" method="post" data-share-form="template">
+            <div class="modal__body">
+                <input type="hidden" name="<?= CSRF_TOKEN_NAME ?>" value="<?= $csrfToken ?>">
+                <input type="hidden" name="update_template_shares" value="1">
+                <input type="hidden" name="template_id" value="">
+                <div class="field">
+                    <label for="template-share-filter">Find user</label>
+                    <input id="template-share-filter" type="search" placeholder="Search collaborators" data-share-filter>
+                </div>
+                <div class="share-picker" data-share-picker>
+                    <?php foreach ($users as $user):
+                        $uid = (int)($user['id'] ?? 0);
+                        $label = trim((string)($user['email'] ?? $user['name'] ?? 'User #' . $uid));
+                        $labelHtml = htmlspecialchars($label, ENT_QUOTES, 'UTF-8');
+                        ?>
+                        <label class="share-picker__item" data-share-user>
+                            <input type="checkbox" name="shared_ids[]" value="<?= $uid ?>">
+                            <span><?= $labelHtml ?></span>
+                        </label>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+            <div class="modal__footer">
+                <button type="button" class="modal__close" data-modal-close>Cancel</button>
+                <button type="submit" class="button">Save</button>
+            </div>
+        </form>
+    </div>
 </div>
-
-<div class="obsidian-modal hidden" id="commandPalette" data-modal>
-  <div class="obsidian-modal__overlay" data-modal-close></div>
-  <div class="obsidian-modal__dialog" role="dialog" aria-modal="true">
-    <header>
-      <input type="search" placeholder="Jump to note..." data-command-input>
-    </header>
-    <ul class="obsidian-modal__results" data-command-results></ul>
-    <footer class="obsidian-modal__hint">Enter to open · ↑↓ to navigate · Esc to close</footer>
-  </div>
-</div>
-
-<div class="share-modal hidden" id="noteShareModal" data-modal>
-  <div class="share-modal__overlay" data-modal-close></div>
-  <div class="share-modal__dialog" role="dialog" aria-modal="true">
-    <header class="share-modal__header">
-      <div>
-        <h3>Share note</h3>
-        <p class="share-modal__subtitle" data-share-note-title></p>
-      </div>
-      <button type="button" class="share-modal__close" data-modal-close>&times;</button>
-    </header>
-    <form method="post" class="share-modal__form" data-note-share-form>
-      <input type="hidden" name="<?php echo  CSRF_TOKEN_NAME; ?>" value="<?php echo  sanitize($csrfToken); ?>">
-      <input type="hidden" name="update_note_shares" value="1">
-      <input type="hidden" name="note_id" value="">
-      <div class="share-modal__body">
-        <?php foreach ($shareOptions as $option): ?>
-          <label class="share-modal__option" data-share-option data-user-id="<?php echo  (int)$option['id']; ?>" data-label="<?php echo  sanitize($option['label']); ?>">
-            <input type="checkbox" name="shared_ids[]" value="<?php echo  (int)$option['id']; ?>">
-            <span><?php echo  sanitize($option['label']); ?></span>
-          </label>
-        <?php endforeach; ?>
-      </div>
-      <div class="share-modal__footer">
-        <span class="share-modal__status" data-share-status></span>
-        <button type="submit" class="btn obsidian-primary">Save access</button>
-      </div>
-    </form>
-  </div>
-</div>
-
-<div class="share-modal hidden" id="templateShareModal" data-modal>
-  <div class="share-modal__overlay" data-modal-close></div>
-  <div class="share-modal__dialog" role="dialog" aria-modal="true">
-    <header class="share-modal__header">
-      <div>
-        <h3>Share template</h3>
-        <p class="share-modal__subtitle" data-share-template-title></p>
-      </div>
-      <button type="button" class="share-modal__close" data-modal-close>&times;</button>
-    </header>
-    <form method="post" class="share-modal__form" data-template-share-form>
-      <input type="hidden" name="<?php echo  CSRF_TOKEN_NAME; ?>" value="<?php echo  sanitize($csrfToken); ?>">
-      <input type="hidden" name="update_template_shares" value="1">
-      <input type="hidden" name="template_id" value="">
-      <div class="share-modal__body">
-        <?php foreach ($shareOptions as $option): ?>
-          <label class="share-modal__option" data-template-share-option data-user-id="<?php echo  (int)$option['id']; ?>" data-label="<?php echo  sanitize($option['label']); ?>">
-            <input type="checkbox" name="shared_ids[]" value="<?php echo  (int)$option['id']; ?>">
-            <span><?php echo  sanitize($option['label']); ?></span>
-          </label>
-        <?php endforeach; ?>
-      </div>
-      <div class="share-modal__footer">
-        <span class="share-modal__status" data-template-share-status></span>
-        <button type="submit" class="btn obsidian-primary">Save access</button>
-      </div>
-    </form>
-  </div>
-</div>
-
-<style>
-:root[data-theme="obsidian"] {
-  color-scheme: only light;
-  --surface-bg: #f6f7fb;
-  --surface-panel: #ffffff;
-  --surface-border: #e2e8f0;
-  --surface-accent: #2563eb;
-  --surface-accent-soft: #eff6ff;
-  --surface-muted: #94a3b8;
-  --surface-strong: #0f172a;
-  --surface-shadow: rgba(15, 23, 42, 0.08);
-}
-
-.obsidian-shell {
-  background: var(--surface-bg);
-  border-radius: 28px;
-  padding: 1.8rem;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  box-shadow: 0 34px 68px var(--surface-shadow);
-  margin-bottom: 2rem;
-}
-
-.amanote-grid {
-  display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
-  gap: 1.4rem;
-}
-
-.amanote-main {
-  display: grid;
-  gap: 1.2rem;
-}
-
-.amanote-rail {
-  display: grid;
-  grid-template-rows: auto auto 1fr auto;
-  gap: 1.2rem;
-  background: linear-gradient(180deg, rgba(255,255,255,0.9), rgba(248,250,252,0.95));
-  border-radius: 22px;
-  border: 1px solid var(--surface-border);
-  padding: 1.2rem 1.1rem;
-  box-shadow: 0 22px 40px rgba(15,23,42,0.08);
-}
-
-.amanote-rail__brand {
-  display: flex;
-  gap: 0.8rem;
-  align-items: center;
-}
-
-.amanote-rail__glyph {
-  width: 44px;
-  height: 44px;
-  border-radius: 14px;
-  background: var(--surface-accent);
-  display: grid;
-  place-items: center;
-  color: #fff;
-  font-size: 1.4rem;
-}
-
-.amanote-rail__brand strong {
-  display: block;
-  font-size: 1.05rem;
-  color: var(--surface-strong);
-}
-
-.amanote-rail__brand small {
-  display: block;
-  font-size: 0.75rem;
-  color: var(--surface-muted);
-}
-
-.amanote-rail__statuses {
-  display: grid;
-  gap: 0.55rem;
-}
-
-.amanote-rail__status {
-  display: flex;
-  gap: 0.8rem;
-  align-items: center;
-  text-decoration: none;
-  padding: 0.5rem 0.55rem;
-  border-radius: 14px;
-  color: var(--surface-strong);
-  border: 1px solid transparent;
-  transition: all 0.18s ease;
-}
-
-.amanote-rail__status:hover {
-  border-color: rgba(37,99,235,0.25);
-  background: rgba(37,99,235,0.08);
-}
-
-.amanote-rail__status.is-active {
-  border-color: var(--surface-accent);
-  background: var(--surface-accent-soft);
-  box-shadow: inset 0 0 0 1px rgba(37,99,235,0.2);
-}
-
-.amanote-rail__icon {
-  width: 38px;
-  height: 38px;
-  border-radius: 12px;
-  background: rgba(37,99,235,0.14);
-  display: grid;
-  place-items: center;
-  font-size: 1.1rem;
-  color: var(--surface-accent);
-}
-
-.amanote-rail__status strong {
-  display: block;
-  font-size: 0.95rem;
-}
-
-.amanote-rail__status small {
-  display: block;
-  font-size: 0.72rem;
-  color: var(--surface-muted);
-}
-
-.amanote-rail__tags {
-  background: rgba(241,245,249,0.9);
-  border-radius: 18px;
-  border: 1px dashed rgba(148,163,184,0.4);
-  padding: 0.85rem;
-  display: grid;
-  gap: 0.65rem;
-}
-
-.amanote-rail__tags-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.amanote-rail__tags h3 {
-  margin: 0;
-  font-size: 0.9rem;
-  color: var(--surface-strong);
-}
-
-.amanote-rail__clear {
-  font-size: 0.75rem;
-  color: var(--surface-accent);
-  text-decoration: none;
-}
-
-.amanote-rail__tags ul {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 0.45rem;
-}
-
-.amanote-rail__tag {
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-  padding: 0.45rem 0.55rem;
-  border-radius: 12px;
-  text-decoration: none;
-  color: var(--surface-strong);
-  border: 1px solid transparent;
-  transition: all 0.18s ease;
-}
-
-.amanote-rail__tag:hover {
-  border-color: rgba(37,99,235,0.25);
-  background: rgba(37,99,235,0.08);
-}
-
-.amanote-rail__tag.is-active {
-  border-color: var(--surface-accent);
-  background: var(--surface-accent-soft);
-}
-
-.amanote-rail__tag small {
-  margin-left: auto;
-  font-size: 0.72rem;
-  color: var(--surface-muted);
-}
-
-.amanote-rail__dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--tag-color, var(--surface-accent));
-}
-
-.amanote-rail__empty {
-  margin: 0;
-  font-size: 0.76rem;
-  color: var(--surface-muted);
-}
-
-.amanote-rail__quick {
-  background: var(--surface-accent);
-  color: #fff;
-  border: none;
-  border-radius: 999px;
-  padding: 0.55rem 1.1rem;
-  font-weight: 600;
-  cursor: pointer;
-  box-shadow: 0 16px 30px rgba(37,99,235,0.32);
-}
-.obsidian-header {
-  background: var(--surface-panel);
-  border-radius: 20px;
-  border: 1px solid var(--surface-border);
-  padding: 1.2rem 1.4rem;
-  display: flex;
-  justify-content: space-between;
-  gap: 1rem;
-  align-items: center;
-  box-shadow: 0 20px 46px var(--surface-shadow);
-}
-
-.obsidian-header__titles {
-  display: grid;
-  gap: 0.45rem;
-}
-
-.obsidian-header__eyebrow {
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
-  font-size: 0.7rem;
-  color: var(--surface-muted);
-}
-
-.obsidian-header__titles h1 {
-  margin: 0;
-  font-size: 1.6rem;
-  color: var(--surface-strong);
-}
-
-.obsidian-header__subtitle {
-  margin: 0;
-  font-size: 0.85rem;
-  color: var(--surface-muted);
-  max-width: 520px;
-}
-
-.obsidian-header__actions {
-  display: flex;
-  gap: 0.6rem;
-  flex-wrap: wrap;
-}
-
-.obsidian-header__command,
-.obsidian-header__quick,
-.obsidian-header__new {
-  border-radius: 999px;
-  padding: 0.5rem 1.1rem;
-  font-weight: 600;
-  font-size: 0.9rem;
-  border: 1px solid transparent;
-  cursor: pointer;
-  text-decoration: none;
-  transition: transform 0.15s ease, background 0.15s ease, color 0.15s ease;
-}
-
-.obsidian-header__command {
-  background: #fff;
-  border-color: rgba(148,163,184,0.45);
-  color: var(--surface-strong);
-}
-
-.obsidian-header__command:hover {
-  border-color: var(--surface-accent);
-  color: var(--surface-accent);
-}
-
-.obsidian-header__quick {
-  background: var(--surface-accent-soft);
-  border-color: rgba(37,99,235,0.2);
-  color: var(--surface-accent);
-}
-
-.obsidian-header__new {
-  background: var(--surface-accent);
-  color: #fff;
-  box-shadow: 0 18px 38px rgba(37,99,235,0.26);
-}
-
-.obsidian-header__actions > *:hover {
-  transform: translateY(-1px);
-}
-
-.obsidian-layout {
-  display: grid;
-  grid-template-columns: 280px minmax(0, 1fr) 320px;
-  gap: 1.2rem;
-}
-
-.obsidian-sidebar,
-.obsidian-main,
-.obsidian-preview {
-  background: var(--surface-panel);
-  border-radius: 20px;
-  border: 1px solid var(--surface-border);
-  padding: 1.2rem;
-  box-shadow: 0 18px 36px var(--surface-shadow);
-  display: grid;
-  gap: 1.05rem;
-}
-
-.obsidian-search {
-  display: grid;
-  gap: 0.7rem;
-}
-
-.obsidian-search__field span {
-  display: block;
-  font-size: 0.78rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--surface-muted);
-  margin-bottom: 0.35rem;
-}
-
-.obsidian-search input {
-  width: 100%;
-  border-radius: 12px;
-  border: 1px solid rgba(148,163,184,0.45);
-  padding: 0.6rem 0.85rem;
-  font-size: 0.95rem;
-  color: var(--surface-strong);
-}
-
-.obsidian-search__meta {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-  font-size: 0.78rem;
-  color: var(--surface-muted);
-}
-
-.obsidian-search__hint kbd {
-  background: rgba(226,232,240,0.8);
-  border-radius: 6px;
-  padding: 0.15rem 0.35rem;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 0.7rem;
-}
-
-.obsidian-search__chip {
-  background: rgba(226,232,240,0.9);
-  border-radius: 999px;
-  padding: 0.25rem 0.65rem;
-  color: var(--surface-strong);
-  font-size: 0.74rem;
-}
-
-.obsidian-search__reset {
-  color: var(--surface-accent);
-  text-decoration: none;
-}
-
-.obsidian-summary {
-  background: rgba(248,250,252,0.9);
-  border-radius: 16px;
-  border: 1px dashed rgba(148,163,184,0.45);
-  padding: 0.9rem;
-  display: grid;
-  gap: 0.65rem;
-}
-
-.obsidian-summary span {
-  display: block;
-  font-size: 0.68rem;
-  letter-spacing: 0.08em;
-  color: var(--surface-muted);
-  text-transform: uppercase;
-}
-
-.obsidian-summary strong {
-  display: block;
-  font-size: 1rem;
-  color: var(--surface-strong);
-}
-
-.obsidian-statuses ul {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 0.45rem;
-}
-
-.obsidian-statuses li {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  background: rgba(248,250,252,0.95);
-  border-radius: 12px;
-  padding: 0.45rem 0.6rem;
-  border: 1px solid rgba(226,232,240,0.9);
-  font-size: 0.85rem;
-  color: var(--surface-strong);
-}
-
-.obsidian-templates header h2 {
-  margin: 0;
-  font-size: 1rem;
-  color: var(--surface-strong);
-}
-
-.obsidian-templates header p {
-  margin: 0.35rem 0 0;
-  color: var(--surface-muted);
-  font-size: 0.82rem;
-}
-
-.obsidian-templates h3 {
-  margin: 0.6rem 0 0.35rem;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  font-size: 0.7rem;
-  color: var(--surface-muted);
-}
-
-.obsidian-template__empty {
-  margin: 0;
-  font-size: 0.78rem;
-  color: var(--surface-muted);
-}
-
-.obsidian-templates ul {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 0.55rem;
-}
-
-.obsidian-template {
-  background: rgba(248,250,252,0.9);
-  border-radius: 14px;
-  border: 1px solid rgba(226,232,240,0.85);
-  padding: 0.65rem 0.7rem;
-  display: grid;
-  gap: 0.5rem;
-}
-
-.obsidian-template--shared {
-  background: rgba(240,249,255,0.95);
-}
-
-.obsidian-template__row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.6rem;
-}
-
-.obsidian-template__apply {
-  text-decoration: none;
-  color: var(--surface-strong);
-  display: flex;
-  gap: 0.55rem;
-  align-items: center;
-}
-
-.obsidian-template__icon {
-  width: 32px;
-  height: 32px;
-  border-radius: 10px;
-  background: rgba(37,99,235,0.12);
-  display: grid;
-  place-items: center;
-  font-size: 0.95rem;
-  color: var(--surface-accent);
-}
-
-.obsidian-template__apply strong {
-  display: block;
-  font-size: 0.9rem;
-}
-
-.obsidian-template__apply em,
-.obsidian-template__apply small {
-  display: block;
-  font-size: 0.72rem;
-  color: var(--surface-muted);
-  font-style: normal;
-}
-
-.obsidian-template__share {
-  background: #fff;
-  border: 1px solid rgba(148,163,184,0.45);
-  border-radius: 999px;
-  padding: 0.35rem 0.8rem;
-  font-size: 0.75rem;
-  cursor: pointer;
-}
-
-.obsidian-template__sharelist {
-  display: flex;
-  gap: 0.35rem;
-  flex-wrap: wrap;
-}
-
-.obsidian-note-list {
-  display: grid;
-  gap: 0.75rem;
-}
-
-.obsidian-note {
-  background: rgba(248,250,252,0.95);
-  border-radius: 18px;
-  border: 1px solid rgba(226,232,240,0.9);
-  padding: 0.85rem;
-  display: grid;
-  gap: 0.55rem;
-  cursor: pointer;
-  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
-}
-
-.obsidian-note:hover {
-  transform: translateY(-1px);
-  border-color: rgba(37,99,235,0.32);
-  box-shadow: 0 18px 32px rgba(15,23,42,0.1);
-}
-
-.obsidian-note.is-active {
-  border-color: var(--surface-accent);
-  box-shadow: 0 20px 38px rgba(37,99,235,0.18);
-}
-
-.obsidian-note__header {
-  display: flex;
-  gap: 0.65rem;
-  align-items: flex-start;
-  justify-content: space-between;
-}
-
-.obsidian-note__icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
-  background: rgba(37,99,235,0.12);
-  display: grid;
-  place-items: center;
-  font-size: 1rem;
-  color: var(--surface-accent);
-}
-
-.obsidian-note__titles h3 {
-  margin: 0;
-  font-size: 1rem;
-  color: var(--surface-strong);
-}
-
-.obsidian-note__meta {
-  display: flex;
-  gap: 0.4rem;
-  align-items: center;
-  flex-wrap: wrap;
-  font-size: 0.74rem;
-  color: var(--surface-muted);
-}
-
-.obsidian-note__timestamp {
-  color: var(--surface-strong);
-}
-
-.obsidian-note__shared {
-  color: #0f766e;
-  font-weight: 600;
-}
-
-.obsidian-note__counts {
-  display: flex;
-  gap: 0.35rem;
-}
-
-.obsidian-note__pill {
-  background: #fff;
-  border-radius: 999px;
-  padding: 0.22rem 0.55rem;
-  font-size: 0.72rem;
-  color: var(--surface-muted);
-}
-
-.obsidian-note__excerpt {
-  margin: 0;
-  font-size: 0.88rem;
-  color: rgba(15,23,42,0.75);
-}
-
-.obsidian-note__tags {
-  display: flex;
-  gap: 0.35rem;
-  flex-wrap: wrap;
-}
-
-.obsidian-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  padding: 0.22rem 0.55rem;
-  border-radius: 999px;
-  background: rgba(37,99,235,0.12);
-  color: var(--surface-accent);
-  font-size: 0.72rem;
-}
-
-.obsidian-tag::before {
-  content: '';
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--tag-color, var(--surface-accent));
-}
-
-.obsidian-preview {
-  padding: 1.25rem;
-}
-
-.obsidian-preview__scroll {
-  display: grid;
-  gap: 0.95rem;
-}
-
-.obsidian-preview__header {
-  display: flex;
-  gap: 0.9rem;
-  align-items: center;
-}
-
-.obsidian-preview__icon {
-  width: 52px;
-  height: 52px;
-  border-radius: 16px;
-  background: rgba(37,99,235,0.12);
-  display: grid;
-  place-items: center;
-  font-size: 1.3rem;
-  color: var(--surface-accent);
-}
-
-.obsidian-preview__header h2 {
-  margin: 0.25rem 0 0;
-  font-size: 1.35rem;
-  color: var(--surface-strong);
-}
-
-.obsidian-preview__timestamp {
-  margin: 0;
-  color: var(--surface-muted);
-  font-size: 0.78rem;
-}
-
-.obsidian-preview__actions {
-  display: flex;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-}
-
-.obsidian-preview__actions .btn,
-.obsidian-btn,
-.obsidian-primary {
-  border-radius: 999px;
-  padding: 0.5rem 1.05rem;
-  font-weight: 600;
-  font-size: 0.88rem;
-  cursor: pointer;
-  text-decoration: none;
-  border: 1px solid transparent;
-}
-
-.obsidian-primary {
-  background: var(--surface-accent);
-  color: #fff;
-  box-shadow: 0 18px 38px rgba(37,99,235,0.28);
-}
-
-.obsidian-btn {
-  background: rgba(37,99,235,0.12);
-  color: var(--surface-accent);
-}
-
-.obsidian-btn--ghost {
-  background: #fff;
-  border-color: rgba(148,163,184,0.45);
-  color: var(--surface-strong);
-}
-.obsidian-preview__meta {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.65rem;
-  background: rgba(248,250,252,0.9);
-  border-radius: 16px;
-  border: 1px solid rgba(226,232,240,0.9);
-  padding: 0.85rem;
-  font-size: 0.8rem;
-  color: var(--surface-strong);
-}
-
-.obsidian-preview__meta dt {
-  margin: 0;
-  font-size: 0.68rem;
-  color: var(--surface-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.obsidian-preview__meta dd {
-  margin: 0.2rem 0 0;
-  font-weight: 600;
-}
-
-.obsidian-preview__properties {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 0.7rem;
-  background: rgba(248,250,252,0.92);
-  border-radius: 16px;
-  border: 1px dashed rgba(148,163,184,0.45);
-  padding: 0.85rem;
-  font-size: 0.8rem;
-}
-
-.obsidian-preview__properties span {
-  display: block;
-  font-size: 0.68rem;
-  color: var(--surface-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.obsidian-preview__properties strong {
-  color: var(--surface-strong);
-  margin-top: 0.25rem;
-  display: block;
-}
-
-.obsidian-preview__tags {
-  display: flex;
-  gap: 0.35rem;
-  flex-wrap: wrap;
-}
-
-.obsidian-preview__shares h3 {
-  margin: 0 0 0.35rem;
-  font-size: 0.95rem;
-  color: var(--surface-strong);
-}
-
-.obsidian-preview__sharelist {
-  display: flex;
-  gap: 0.35rem;
-  flex-wrap: wrap;
-}
-
-.obsidian-pill {
-  display: inline-flex;
-  align-items: center;
-  background: rgba(226,232,240,0.9);
-  border-radius: 999px;
-  padding: 0.25rem 0.6rem;
-  font-size: 0.72rem;
-  color: var(--surface-strong);
-  font-weight: 500;
-}
-
-.obsidian-pill.is-muted {
-  background: rgba(148,163,184,0.18);
-  color: var(--surface-muted);
-}
-
-.obsidian-empty {
-  text-align: center;
-  display: grid;
-  gap: 0.6rem;
-  justify-items: center;
-  background: rgba(248,250,252,0.9);
-  border: 1px dashed rgba(148,163,184,0.4);
-  border-radius: 16px;
-  padding: 1.5rem;
-  color: var(--surface-muted);
-}
-
-.amanote-tag {
-  background: rgba(37,99,235,0.12);
-  color: var(--surface-accent);
-  display: inline-flex;
-  gap: 0.35rem;
-  align-items: center;
-  padding: 0.22rem 0.55rem;
-  border-radius: 999px;
-  font-size: 0.72rem;
-}
-
-.amanote-tag::before {
-  content: '';
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--tag-color, var(--surface-accent));
-}
-
-.amanote-tag--empty {
-  background: rgba(148,163,184,0.2);
-  color: var(--surface-muted);
-}
-
-.badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.28rem 0.55rem;
-  border-radius: 999px;
-  font-size: 0.72rem;
-  font-weight: 600;
-}
-
-.badge--blue { background: #dbeafe; color: #1d4ed8; }
-.badge--indigo { background: #e0e7ff; color: #4338ca; }
-.badge--purple { background: #ede9fe; color: #7c3aed; }
-.badge--orange { background: #fef3c7; color: #b45309; }
-.badge--green { background: #dcfce7; color: #047857; }
-.badge--slate { background: #f1f5f9; color: #475569; }
-.badge--danger { background: #fee2e2; color: #b91c1c; }
-.badge--amber { background: #fef3c7; color: #92400e; }
-.badge--teal { background: #ccfbf1; color: #0f766e; }
-
-.obsidian-modal {
-  position: fixed;
-  inset: 0;
-  z-index: 70;
-  display: grid;
-  place-items: center;
-  padding: 2rem;
-  background: rgba(15,23,42,0.28);
-  backdrop-filter: blur(6px);
-  transition: opacity 0.2s ease;
-}
-
-.obsidian-modal.hidden {
-  opacity: 0;
-  pointer-events: none;
-}
-
-.obsidian-modal__overlay {
-  position: absolute;
-  inset: 0;
-}
-
-.obsidian-modal__dialog {
-  position: relative;
-  z-index: 1;
-  width: min(560px, 100%);
-  background: #fff;
-  border-radius: 24px;
-  border: 1px solid rgba(226,232,240,0.9);
-  box-shadow: 0 45px 90px rgba(15,23,42,0.2);
-  padding: 1.5rem;
-  display: grid;
-  gap: 1rem;
-}
-
-.obsidian-modal__header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 0.8rem;
-}
-
-.obsidian-modal__header h3 {
-  margin: 0;
-  font-size: 1.3rem;
-}
-
-.obsidian-modal__subtitle {
-  margin: 0.25rem 0 0;
-  color: var(--surface-muted);
-  font-size: 0.85rem;
-}
-
-.obsidian-modal__close {
-  background: rgba(226,232,240,0.7);
-  border: none;
-  border-radius: 50%;
-  width: 34px;
-  height: 34px;
-  font-size: 1.2rem;
-  cursor: pointer;
-  color: var(--surface-strong);
-}
-
-.obsidian-modal__form {
-  display: grid;
-  gap: 0.9rem;
-}
-
-.obsidian-modal__body {
-  display: grid;
-  gap: 0.85rem;
-}
-
-.obsidian-modal__grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.8rem;
-}
-
-.obsidian-field span {
-  display: block;
-  font-size: 0.75rem;
-  color: var(--surface-muted);
-  margin-bottom: 0.3rem;
-}
-
-.obsidian-field input,
-.obsidian-field select,
-.obsidian-field textarea {
-  width: 100%;
-  border-radius: 12px;
-  border: 1px solid rgba(148,163,184,0.45);
-  padding: 0.55rem 0.8rem;
-  font-size: 0.95rem;
-  color: var(--surface-strong);
-}
-
-.obsidian-modal__toggle {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.85rem;
-  color: var(--surface-strong);
-}
-
-.obsidian-modal__status {
-  min-height: 1.2rem;
-  font-size: 0.8rem;
-  color: var(--surface-muted);
-}
-
-.obsidian-modal__footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.6rem;
-}
-
-.share-modal,
-#templateShareModal {
-  position: fixed;
-  inset: 0;
-  z-index: 75;
-  display: grid;
-  place-items: center;
-  padding: 2rem;
-  background: rgba(15,23,42,0.28);
-  backdrop-filter: blur(6px);
-  transition: opacity 0.2s ease;
-}
-
-.share-modal.hidden,
-#templateShareModal.hidden {
-  opacity: 0;
-  pointer-events: none;
-}
-
-.share-modal__overlay,
-#templateShareModal .share-modal__overlay {
-  position: absolute;
-  inset: 0;
-}
-
-.share-modal__dialog {
-  position: relative;
-  z-index: 1;
-  width: min(480px, 100%);
-  background: #fff;
-  border-radius: 22px;
-  border: 1px solid rgba(226,232,240,0.9);
-  box-shadow: 0 40px 90px rgba(15,23,42,0.18);
-  padding: 1.3rem;
-  display: grid;
-  gap: 0.85rem;
-}
-
-.share-modal__header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 0.6rem;
-}
-
-.share-modal__header h3 {
-  margin: 0;
-  font-size: 1.25rem;
-}
-
-.share-modal__subtitle {
-  margin: 0.2rem 0 0;
-  font-size: 0.82rem;
-  color: var(--surface-muted);
-}
-
-.share-modal__close {
-  background: rgba(226,232,240,0.7);
-  border: none;
-  border-radius: 50%;
-  width: 32px;
-  height: 32px;
-  font-size: 1.15rem;
-  cursor: pointer;
-}
-
-.share-modal__form {
-  display: grid;
-  gap: 0.8rem;
-}
-
-.share-modal__body {
-  max-height: 260px;
-  overflow: auto;
-  border-radius: 12px;
-  border: 1px solid rgba(226,232,240,0.85);
-  padding: 0.6rem;
-  display: grid;
-  gap: 0.45rem;
-}
-
-.share-modal__option {
-  display: flex;
-  align-items: center;
-  gap: 0.55rem;
-  background: rgba(248,250,252,0.95);
-  border-radius: 10px;
-  padding: 0.5rem 0.6rem;
-  font-size: 0.85rem;
-  color: var(--surface-strong);
-}
-
-.share-modal__status {
-  font-size: 0.78rem;
-  color: var(--surface-muted);
-}
-
-.share-modal__status.is-error {
-  color: #b91c1c;
-}
-
-.share-modal__footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-@media (max-width: 1280px) {
-  .amanote-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .amanote-rail {
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    grid-template-rows: none;
-  }
-  .obsidian-layout {
-    grid-template-columns: minmax(0,1fr);
-  }
-  .obsidian-preview {
-    order: -1;
-  }
-}
-
-@media (max-width: 960px) {
-  .obsidian-header {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-  .obsidian-header__actions {
-    width: 100%;
-  }
-  .obsidian-layout {
-    gap: 1rem;
-  }
-}
-
-@media (max-width: 720px) {
-  .obsidian-shell {
-    padding: 1.2rem;
-  }
-  .amanote-rail {
-    padding: 1rem;
-  }
-  .obsidian-modal__grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
-</style>
 
 <script>
-(() => {
-  const shell = document.querySelector('[data-index-shell]');
-  if (!shell) return;
-
-  const noteState = new Map();
-  const noteList = shell.querySelector('[data-note-list]');
-  let noteElements = Array.from(shell.querySelectorAll('[data-note-item]'));
-  const summaryTotal = shell.querySelector('[data-summary-total] strong');
-  const summaryShared = shell.querySelector('[data-summary-shared] strong');
-  const summaryComments = shell.querySelector('[data-summary-comments] strong');
-  const summaryPhotos = shell.querySelector('[data-summary-photos] strong');
-  const summaryUpdated = shell.querySelector('[data-summary-updated] strong');
-
-  noteElements.forEach((el) => {
-    try {
-      const raw = el.getAttribute('data-note') || '{}';
-      const data = JSON.parse(raw);
-      if (data && typeof data.id !== 'undefined') {
-        noteState.set(String(data.id), data);
-      }
-    } catch (err) {
-      console.warn('Failed to parse note payload', err);
-    }
-  });
-
-  const noteClickHandler = (event) => {
-    event.preventDefault();
-    activateNote(event.currentTarget);
-  };
-
-  function safeParseCount(el) {
-    if (!el) return 0;
-    const raw = el.textContent || '';
-    const normalized = raw.replace(/[^0-9.-]/g, '');
-    const value = parseInt(normalized, 10);
-    return Number.isNaN(value) ? 0 : value;
-  }
-
-  function setCount(el, value) {
-    if (!el) return;
-    const safeValue = Number(value);
-    el.textContent = Number.isNaN(safeValue) ? '0' : safeValue.toLocaleString();
-  }
-
-  function updateSummaryAfterCreate(payload) {
-    if (summaryTotal) {
-      setCount(summaryTotal, safeParseCount(summaryTotal) + 1);
-    }
-    if (summaryShared && Array.isArray(payload.shareIds) && payload.shareIds.length) {
-      setCount(summaryShared, safeParseCount(summaryShared) + 1);
-    }
-    if (summaryComments && Number(payload.commentCount || 0) > 0) {
-      setCount(summaryComments, safeParseCount(summaryComments) + Number(payload.commentCount || 0));
-    }
-    if (summaryPhotos && Number(payload.photoCount || 0) > 0) {
-      setCount(summaryPhotos, safeParseCount(summaryPhotos) + Number(payload.photoCount || 0));
-    }
-    if (summaryUpdated) {
-      summaryUpdated.textContent = 'just now';
-    }
-  }
-
-  function todayIso() {
-    const now = new Date();
-    now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
-    return now.toISOString().slice(0, 10);
-  }
-
-  const preview = document.querySelector('[data-note-preview]');
-  const previewRoot = preview ? preview.querySelector('[data-active-note-id]') : null;
-  const previewTitle = preview ? preview.querySelector('[data-preview-title]') : null;
-  const previewStatus = preview ? preview.querySelector('[data-preview-status]') : null;
-  const previewIcon = preview ? preview.querySelector('[data-preview-icon]') : null;
-  const previewOwner = preview ? preview.querySelector('[data-preview-owner]') : null;
-  const previewPhotos = preview ? preview.querySelector('[data-preview-photos]') : null;
-  const previewComments = preview ? preview.querySelector('[data-preview-comments]') : null;
-  const previewDate = preview ? preview.querySelector('[data-preview-date]') : null;
-  const previewProperties = preview ? preview.querySelector('[data-preview-properties]') : null;
-  const previewTags = preview ? preview.querySelector('[data-preview-tags]') : null;
-  const previewShares = preview ? preview.querySelector('[data-preview-shares]') : null;
-  const previewView = preview ? preview.querySelector('[data-preview-view]') : null;
-  const previewEdit = preview ? preview.querySelector('[data-preview-edit]') : null;
-  const previewShareBtn = preview ? preview.querySelector('[data-open-note-share]') : null;
-
-  function renderPreview(payload) {
-    if (!payload || !preview) return;
-    if (previewRoot) previewRoot.setAttribute('data-active-note-id', String(payload.id || ''));
-    if (previewTitle) previewTitle.textContent = payload.title || 'Untitled';
-    if (previewStatus) {
-      previewStatus.textContent = payload.statusLabel || '';
-      previewStatus.className = 'badge ' + (payload.statusBadge || 'badge--indigo');
-    }
-    if (previewIcon) previewIcon.textContent = payload.icon || '📝';
-    if (previewOwner) previewOwner.textContent = payload.ownerLabel || '';
-    if (previewPhotos) previewPhotos.textContent = String(payload.photoCount || 0);
-    if (previewComments) previewComments.textContent = String(payload.commentCount || 0);
-    if (previewDate) {
-      const formatted = (payload.noteDateFormatted || '').trim();
-      const raw = (payload.noteDate || '').trim();
-      previewDate.textContent = formatted || raw;
-    }
-    if (previewView && payload.links) previewView.setAttribute('href', payload.links.view || '#');
-    if (previewEdit && payload.links) previewEdit.setAttribute('href', payload.links.edit || '#');
-    if (previewShareBtn) {
-      if (payload.canShare) {
-        previewShareBtn.dataset.openNoteShare = String(payload.id || '');
-        previewShareBtn.style.display = '';
-      } else {
-        previewShareBtn.style.display = 'none';
-      }
-    }
-    if (previewProperties) {
-      previewProperties.innerHTML = '';
-      if (payload.properties) {
-        Object.entries(payload.properties).forEach(([key, value]) => {
-          const val = String(value || '').trim();
-          if (!val) return;
-          const row = document.createElement('div');
-          const label = document.createElement('span');
-          label.textContent = key.replace(/_/g, ' ');
-          const strong = document.createElement('strong');
-          strong.textContent = val;
-          row.appendChild(label);
-          row.appendChild(strong);
-          previewProperties.appendChild(row);
-        });
-      }
-    }
-    if (previewTags) {
-      previewTags.innerHTML = '';
-      (payload.tags || []).forEach((tag) => {
-        const span = document.createElement('span');
-        span.className = 'obsidian-tag';
-        if (tag && tag.color) span.style.setProperty('--tag-color', tag.color);
-        span.textContent = tag && tag.label ? tag.label : '';
-        previewTags.appendChild(span);
-      });
-    }
-    if (previewShares) {
-      previewShares.innerHTML = '';
-      const shares = Array.isArray(payload.shareLabels) ? payload.shareLabels : [];
-      if (!shares.length) {
-        const pill = document.createElement('span');
-        pill.className = 'obsidian-pill is-muted';
-        pill.textContent = 'Private';
-        previewShares.appendChild(pill);
-      } else {
-        shares.forEach((label) => {
-          const pill = document.createElement('span');
-          pill.className = 'obsidian-pill';
-          pill.textContent = label;
-          previewShares.appendChild(pill);
-        });
-      }
-    }
-  }
-
-  function activateNote(el) {
-    if (!el) return;
-    noteElements.forEach((node) => node.classList.remove('is-active'));
-    el.classList.add('is-active');
-    const noteId = el.getAttribute('data-note-id');
-    const payload = noteState.get(String(noteId));
-    if (payload) renderPreview(payload);
-  }
-
-  noteElements.forEach((el) => {
-    el.addEventListener('click', noteClickHandler);
-  });
-
-  const initial = noteElements.find((el) => el.classList.contains('is-active'));
-  if (initial) activateNote(initial);
-
-  function normalizeIcon(payload) {
-    if (payload && typeof payload.icon === 'string' && payload.icon.trim() !== '') {
-      return payload.icon.trim();
-    }
-    const title = String((payload && payload.title) || '').trim();
-    if (!title) return '📝';
-    const first = title.charAt(0);
-    return first ? first.toUpperCase() : '📝';
-  }
-
-  function createNoteCard(payload) {
-    if (!payload) return null;
-    const article = document.createElement('article');
-    article.className = 'obsidian-note';
-    article.dataset.noteId = String(payload.id || '');
-    article.dataset.note = JSON.stringify(payload);
-    article.setAttribute('data-note-item', '');
-
-    const header = document.createElement('header');
-    header.className = 'obsidian-note__header';
-
-    const icon = document.createElement('span');
-    icon.className = 'obsidian-note__icon';
-    icon.textContent = normalizeIcon(payload);
-    header.appendChild(icon);
-
-    const titles = document.createElement('div');
-    titles.className = 'obsidian-note__titles';
-    const heading = document.createElement('h3');
-    heading.textContent = payload.title || 'Untitled';
-    titles.appendChild(heading);
-
-    const meta = document.createElement('div');
-    meta.className = 'obsidian-note__meta';
-    const status = document.createElement('span');
-    status.className = 'badge ' + (payload.statusBadge || 'badge--indigo');
-    status.textContent = payload.statusLabel || '';
-    meta.appendChild(status);
-    if (payload.updatedRelative) {
-      const timestamp = document.createElement('span');
-      timestamp.className = 'obsidian-note__timestamp';
-      timestamp.textContent = payload.updatedRelative;
-      meta.appendChild(timestamp);
-    }
-    if (payload.isShared) {
-      const shared = document.createElement('span');
-      shared.className = 'obsidian-note__shared';
-      shared.textContent = 'Shared';
-      meta.appendChild(shared);
-    }
-    titles.appendChild(meta);
-    header.appendChild(titles);
-
-    const counts = document.createElement('div');
-    counts.className = 'obsidian-note__counts';
-    const sharePill = document.createElement('span');
-    sharePill.className = 'obsidian-note__pill';
-    sharePill.dataset.noteShareCount = String(payload.id || '');
-    sharePill.textContent = `👥 ${Number(payload.shareCount || 0)}`;
-    counts.appendChild(sharePill);
-    const commentPill = document.createElement('span');
-    commentPill.className = 'obsidian-note__pill';
-    commentPill.textContent = `💬 ${Number(payload.commentCount || 0)}`;
-    counts.appendChild(commentPill);
-    const photoPill = document.createElement('span');
-    photoPill.className = 'obsidian-note__pill';
-    photoPill.textContent = `📸 ${Number(payload.photoCount || 0)}`;
-    counts.appendChild(photoPill);
-    header.appendChild(counts);
-
-    article.appendChild(header);
-
-    if (payload.excerpt) {
-      const excerpt = document.createElement('p');
-      excerpt.className = 'obsidian-note__excerpt';
-      excerpt.textContent = payload.excerpt;
-      article.appendChild(excerpt);
-    }
-
-    if (Array.isArray(payload.tags) && payload.tags.length) {
-      const tagWrap = document.createElement('div');
-      tagWrap.className = 'obsidian-note__tags';
-      payload.tags.forEach((tag) => {
-        if (!tag) return;
-        const span = document.createElement('span');
-        span.className = 'obsidian-tag';
-        if (tag.color) {
-          span.style.setProperty('--tag-color', tag.color);
+    window.notesApp = {
+        shareMap: <?= json_encode($shareMap, JSON_UNESCAPED_UNICODE) ?>,
+        messages: {
+            saveError: 'Unable to save changes. Please try again.',
         }
-        span.textContent = tag.label || '';
-        tagWrap.appendChild(span);
-      });
-      article.appendChild(tagWrap);
-    }
-
-    return article;
-  }
-
-  function insertNoteCard(payload) {
-    if (!payload || !noteList) return;
-    const card = createNoteCard(payload);
-    if (!card) return;
-    const emptyState = noteList.querySelector('.obsidian-empty');
-    if (emptyState) emptyState.remove();
-    noteList.prepend(card);
-    card.addEventListener('click', noteClickHandler);
-    noteElements.unshift(card);
-    noteState.set(String(payload.id || ''), payload);
-    activateNote(card);
-  }
-
-  const quickModal = document.getElementById('quickCaptureModal');
-  const quickForm = quickModal ? quickModal.querySelector('[data-quick-form]') : null;
-  const quickStatus = quickModal ? quickModal.querySelector('[data-quick-status]') : null;
-  const quickDateInput = quickForm ? quickForm.querySelector('input[name="note_date"]') : null;
-  const quickOpenToggle = quickForm ? quickForm.querySelector('input[name="quick_open"]') : null;
-  const quickTitleInput = quickForm ? quickForm.querySelector('input[name="title"]') : null;
-  const quickOpeners = document.querySelectorAll('[data-quick-open]');
-
-  function resetQuickForm(preserveStatus = false) {
-    if (!quickForm) return;
-    quickForm.reset();
-    if (quickDateInput) quickDateInput.value = todayIso();
-    if (quickOpenToggle) quickOpenToggle.checked = true;
-    if (!preserveStatus && quickStatus) {
-      quickStatus.textContent = '';
-      quickStatus.classList.remove('is-error');
-      quickStatus.classList.remove('is-success');
-    }
-  }
-
-  if (quickDateInput && !quickDateInput.value) {
-    quickDateInput.value = todayIso();
-  }
-
-  function openQuickCapture() {
-    if (!quickModal) return;
-    resetQuickForm();
-    openModal(quickModal);
-    setTimeout(() => {
-      if (quickTitleInput) quickTitleInput.focus();
-    }, 10);
-  }
-
-  quickOpeners.forEach((btn) => {
-    btn.addEventListener('click', (event) => {
-      event.preventDefault();
-      openQuickCapture();
-    });
-  });
-
-  document.addEventListener('keydown', (event) => {
-    const targetTag = (event.target && event.target.tagName ? event.target.tagName.toLowerCase() : '');
-    if (targetTag === 'input' || targetTag === 'textarea') return;
-    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'n') {
-      event.preventDefault();
-      openQuickCapture();
-    }
-  });
-
-  if (quickForm) {
-    quickForm.addEventListener('submit', (event) => {
-      event.preventDefault();
-      const formData = new FormData(quickForm);
-      if (quickStatus) {
-        quickStatus.textContent = 'Capturing…';
-        quickStatus.classList.remove('is-error');
-        quickStatus.classList.remove('is-success');
-      }
-      fetch('index.php', {
-        method: 'POST',
-        body: formData,
-        headers: { 'X-Requested-With': 'XMLHttpRequest' },
-      }).then((res) => {
-        if (res.ok) return res.json();
-        return res.json().then((data) => {
-          const message = data && data.message ? data.message : 'Request failed';
-          throw new Error(message);
-        }).catch(() => {
-          throw new Error('Request failed');
-        });
-      }).then((data) => {
-        if (!data || !data.ok || !data.note) {
-          throw new Error((data && data.message) || 'Unable to capture note.');
-        }
-        const payload = data.note;
-        insertNoteCard(payload);
-        updateSummaryAfterCreate(payload);
-        if (quickStatus) {
-          quickStatus.textContent = 'Note captured';
-          quickStatus.classList.add('is-success');
-        }
-        const shouldOpen = formData.get('quick_open') === '1';
-        if (shouldOpen && payload.links && payload.links.edit) {
-          window.location.href = payload.links.edit;
-          return;
-        }
-        setTimeout(() => {
-          closeModal(quickModal);
-          resetQuickForm();
-        }, 220);
-      }).catch((error) => {
-        if (quickStatus) {
-          quickStatus.textContent = error && error.message ? error.message : 'Unable to capture note.';
-          quickStatus.classList.add('is-error');
-        }
-      });
-    });
-  }
-
-  const commandModal = document.getElementById('commandPalette');
-  const commandInput = commandModal ? commandModal.querySelector('[data-command-input]') : null;
-  const commandResults = commandModal ? commandModal.querySelector('[data-command-results]') : null;
-  let commandItems = [];
-  let commandIndex = -1;
-
-  function closeModal(modal) {
-    if (!modal) return;
-    modal.classList.add('hidden');
-    modal.setAttribute('aria-hidden', 'true');
-  }
-
-  function openModal(modal) {
-    if (!modal) return;
-    modal.classList.remove('hidden');
-    modal.setAttribute('aria-hidden', 'false');
-  }
-
-  function openCommandPalette() {
-    if (!commandModal || !commandResults) return;
-    commandResults.innerHTML = '';
-    commandItems = Array.from(noteState.values()).sort((a, b) => String(a.title || '').localeCompare(String(b.title || '')));
-    commandItems.forEach((item, idx) => {
-      const li = document.createElement('li');
-      li.textContent = item.title || 'Untitled';
-      li.dataset.noteId = String(item.id || '');
-      if (!idx) {
-        li.classList.add('is-active');
-        commandIndex = 0;
-      }
-      li.addEventListener('click', () => {
-        closeModal(commandModal);
-        setTimeout(() => {
-          const target = shell.querySelector(`[data-note-id="${item.id}"]`);
-          if (target) {
-            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            activateNote(target);
-          }
-        }, 40);
-      });
-      commandResults.appendChild(li);
-    });
-    openModal(commandModal);
-    if (commandInput) {
-      commandInput.value = '';
-      commandInput.focus();
-    }
-  }
-
-  document.addEventListener('keydown', (event) => {
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
-      event.preventDefault();
-      openCommandPalette();
-    }
-    if (event.key === 'Escape') {
-      closeModal(commandModal);
-      closeModal(noteShareModal);
-      closeModal(templateShareModal);
-    }
-  });
-
-  if (commandModal && commandResults && commandInput) {
-    commandInput.addEventListener('input', () => {
-      const query = commandInput.value.toLowerCase();
-      Array.from(commandResults.children).forEach((li, idx) => {
-        const match = li.textContent.toLowerCase().includes(query);
-        li.style.display = match ? '' : 'none';
-        if (match && commandIndex === -1) {
-          commandIndex = idx;
-          li.classList.add('is-active');
-        }
-      });
-    });
-    commandModal.addEventListener('keydown', (event) => {
-      const visible = Array.from(commandResults.children).filter((li) => li.style.display !== 'none');
-      if (!visible.length) return;
-      if (event.key === 'ArrowDown') {
-        event.preventDefault();
-        commandIndex = (commandIndex + 1) % visible.length;
-        visible.forEach((li, idx) => li.classList.toggle('is-active', idx === commandIndex));
-      } else if (event.key === 'ArrowUp') {
-        event.preventDefault();
-        commandIndex = (commandIndex - 1 + visible.length) % visible.length;
-        visible.forEach((li, idx) => li.classList.toggle('is-active', idx === commandIndex));
-      } else if (event.key === 'Enter') {
-        event.preventDefault();
-        const target = visible[commandIndex];
-        if (target) target.click();
-      }
-    });
-  }
-
-  const noteShareModal = document.getElementById('noteShareModal');
-  const noteShareForm = noteShareModal ? noteShareModal.querySelector('[data-note-share-form]') : null;
-  const noteShareStatus = noteShareModal ? noteShareModal.querySelector('[data-share-status]') : null;
-  const noteShareTitle = noteShareModal ? noteShareModal.querySelector('[data-share-note-title]') : null;
-  const noteShareOptions = noteShareModal ? Array.from(noteShareModal.querySelectorAll('[data-share-option]')) : [];
-
-  function syncOptions(options, selected, ownerId) {
-    options.forEach((option) => {
-      const checkbox = option.querySelector('input[type="checkbox"]');
-      if (!checkbox) return;
-      const uid = Number(option.dataset.userId || '0');
-      checkbox.checked = selected.includes(uid);
-      if (uid === ownerId) {
-        checkbox.checked = true;
-        checkbox.disabled = true;
-        option.classList.add('is-disabled');
-      } else {
-        checkbox.disabled = false;
-        option.classList.remove('is-disabled');
-      }
-    });
-  }
-
-  function openNoteShare(noteId) {
-    if (!noteShareModal) return;
-    const payload = noteState.get(String(noteId));
-    if (!payload) return;
-    if (noteShareForm) {
-      noteShareForm.querySelector('input[name="note_id"]').value = String(noteId);
-    }
-    if (noteShareTitle) noteShareTitle.textContent = payload.title || 'Untitled';
-    syncOptions(noteShareOptions, payload.shareIds || [], Number(payload.ownerId || 0));
-    if (noteShareStatus) {
-      noteShareStatus.textContent = '';
-      noteShareStatus.classList.remove('is-error');
-    }
-    openModal(noteShareModal);
-    const first = noteShareModal.querySelector('input[type="checkbox"]');
-    if (first) first.focus();
-  }
-
-  function updateNoteShares(noteId, shares) {
-    const payload = noteState.get(String(noteId));
-    if (!payload) return;
-    const ids = shares.map((entry) => Number(entry.id || entry));
-    const labels = shares.map((entry) => entry.label || String(entry.id));
-    payload.shareIds = ids;
-    payload.shareLabels = labels;
-    payload.shareCount = ids.length;
-    noteState.set(String(noteId), payload);
-    const pill = document.querySelector(`[data-note-share-count="${noteId}"]`);
-    if (pill) pill.textContent = `👥 ${ids.length}`;
-    if (previewRoot && String(previewRoot.getAttribute('data-active-note-id')) === String(noteId)) {
-      renderPreview(payload);
-    }
-  }
-
-  if (noteShareForm) {
-    noteShareForm.addEventListener('submit', (event) => {
-      event.preventDefault();
-      const formData = new FormData(noteShareForm);
-      fetch('index.php', {
-        method: 'POST',
-        body: formData,
-        headers: { 'X-Requested-With': 'XMLHttpRequest' },
-      }).then((res) => {
-        if (!res.ok) throw new Error('Request failed');
-        return res.json();
-      }).then((data) => {
-        if (data && data.ok) {
-          updateNoteShares(data.note_id, data.shares || []);
-          if (noteShareStatus) {
-            noteShareStatus.textContent = 'Access updated';
-            noteShareStatus.classList.remove('is-error');
-          }
-          setTimeout(() => closeModal(noteShareModal), 350);
-        } else {
-          throw new Error('Bad response');
-        }
-      }).catch(() => {
-        if (noteShareStatus) {
-          noteShareStatus.textContent = 'Could not update shares.';
-          noteShareStatus.classList.add('is-error');
-        }
-      });
-    });
-  }
-
-  document.querySelectorAll('[data-open-note-share]').forEach((btn) => {
-    btn.addEventListener('click', (event) => {
-      event.preventDefault();
-      openNoteShare(btn.getAttribute('data-open-note-share'));
-    });
-  });
-
-  const templateShareModal = document.getElementById('templateShareModal');
-  const templateShareForm = templateShareModal ? templateShareModal.querySelector('[data-template-share-form]') : null;
-  const templateShareStatus = templateShareModal ? templateShareModal.querySelector('[data-template-share-status]') : null;
-  const templateShareTitle = templateShareModal ? templateShareModal.querySelector('[data-share-template-title]') : null;
-  const templateShareOptions = templateShareModal ? Array.from(templateShareModal.querySelectorAll('[data-template-share-option]')) : [];
-  const templateState = new Map();
-  const templateIdInput = templateShareForm ? templateShareForm.querySelector('input[name="template_id"]') : null;
-
-  function applyTemplateState(templateId, payload) {
-    if (!templateId) return {};
-    const key = String(templateId);
-    const existing = templateState.get(key) || {};
-    const next = Object.assign({ id: Number(templateId) }, existing, payload || {});
-    templateState.set(key, next);
-    const trigger = document.querySelector(`[data-template-share-button="${key}"]`);
-    if (trigger) {
-      try {
-        trigger.setAttribute('data-template-share', JSON.stringify(next));
-      } catch (err) {
-        // ignore serialization issues
-      }
-    }
-    return next;
-  }
-
-  function renderTemplateShares(templateId, entries) {
-    const list = document.querySelector(`[data-template-share-list="${templateId}"]`);
-    if (!list) return;
-    list.innerHTML = '';
-    if (!entries || !entries.length) {
-      const pill = document.createElement('span');
-      pill.className = 'obsidian-pill is-muted';
-      pill.textContent = 'Private';
-      list.appendChild(pill);
-      return;
-    }
-    entries.forEach((entry) => {
-      const pill = document.createElement('span');
-      pill.className = 'obsidian-pill';
-      pill.textContent = entry.label || entry;
-      list.appendChild(pill);
-    });
-  }
-
-  function syncTemplateOptions(state) {
-    const selected = Array.isArray(state.shareIds) ? state.shareIds.map(Number) : [];
-    const ownerId = Number(state.ownerId || 0);
-    templateShareOptions.forEach((option) => {
-      const checkbox = option.querySelector('input[type="checkbox"]');
-      if (!checkbox) return;
-      const uid = Number(option.dataset.userId || '0');
-      const isOwner = ownerId > 0 && uid === ownerId;
-      checkbox.checked = isOwner || selected.includes(uid);
-      checkbox.disabled = isOwner;
-      option.classList.toggle('is-disabled', isOwner);
-    });
-  }
-
-  if (templateShareModal) {
-    document.querySelectorAll('[data-template-share]').forEach((button) => {
-      const raw = button.getAttribute('data-template-share') || '{}';
-      let parsed = {};
-      try {
-        parsed = JSON.parse(raw);
-      } catch (err) {
-        console.warn('Template payload error', err);
-      }
-      const templateId = button.getAttribute('data-template-share-button') || String(parsed.id || '');
-      if (templateId) {
-        applyTemplateState(templateId, parsed);
-      }
-      button.addEventListener('click', (event) => {
-        event.preventDefault();
-        if (!templateShareForm || !templateIdInput) return;
-        const key = String(templateId || '');
-        const state = templateState.get(key) || applyTemplateState(key, parsed);
-        templateIdInput.value = key;
-        if (templateShareTitle) templateShareTitle.textContent = state.name || 'Template';
-        syncTemplateOptions(state);
-        if (templateShareStatus) {
-          templateShareStatus.textContent = '';
-          templateShareStatus.classList.remove('is-error');
-        }
-        openModal(templateShareModal);
-        const first = templateShareModal.querySelector('input[type="checkbox"]');
-        if (first) first.focus();
-      });
-    });
-
-    if (templateShareForm) {
-      templateShareForm.addEventListener('submit', (event) => {
-        event.preventDefault();
-        const formData = new FormData(templateShareForm);
-        fetch('index.php', {
-          method: 'POST',
-          body: formData,
-          headers: { 'X-Requested-With': 'XMLHttpRequest' },
-        }).then((res) => {
-          if (!res.ok) throw new Error('Request failed');
-          return res.json();
-        }).then((data) => {
-          if (data && data.ok) {
-            const templateId = String(data.template_id || formData.get('template_id') || '');
-            const shares = Array.isArray(data.shares) ? data.shares : [];
-            const normalized = shares.map((entry) => ({
-              id: Number(entry.id || entry),
-              label: entry.label || String(entry.id || ''),
-            })).filter((entry) => entry.label !== '' || entry.id > 0);
-            const shareIds = normalized.map((entry) => entry.id).filter((id) => id > 0);
-            const shareLabels = normalized.map((entry) => entry.label);
-            const state = applyTemplateState(templateId, { shareIds, shareLabels });
-            renderTemplateShares(templateId, normalized);
-            syncTemplateOptions(state);
-            if (templateShareStatus) {
-              templateShareStatus.textContent = 'Template access updated';
-              templateShareStatus.classList.remove('is-error');
-            }
-            setTimeout(() => closeModal(templateShareModal), 350);
-          } else {
-            throw new Error('Bad response');
-          }
-        }).catch(() => {
-          if (templateShareStatus) {
-            templateShareStatus.textContent = 'Could not update template shares.';
-            templateShareStatus.classList.add('is-error');
-          }
-        });
-      });
-    }
-  }
-
-document.querySelectorAll('[data-modal-close]').forEach((btn) => {
-    btn.addEventListener('click', (event) => {
-      event.preventDefault();
-      closeModal(btn.closest('[data-modal]'));
-    });
-  });
-})();
+    };
 </script>
-<?php include __DIR__ . '/../includes/footer.php';
+<script src="composer.js?v=<?= filemtime(__DIR__ . '/composer.js') ?>" defer></script>
+</body>
+</html>

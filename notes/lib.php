@@ -1087,6 +1087,76 @@ function notes_fetch(int $id): ?array {
     return $row ?: null;
 }
 
+function notes_list_for_user(int $userId): array {
+    $pdo  = get_pdo();
+    $role = current_user_role_key();
+
+    $sql    = 'SELECT n.* FROM notes n';
+    $params = [];
+
+    if (!in_array($role, ['root', 'admin'], true)) {
+        $params[':viewer_id'] = $userId;
+        $shareCol = notes__ensure_shares_schema($pdo);
+        if ($shareCol) {
+            $sql .= " WHERE n.user_id = :viewer_id OR EXISTS (SELECT 1 FROM notes_shares s WHERE s.note_id = n.id AND s.`{$shareCol}` = :viewer_id)";
+        } else {
+            $sql .= ' WHERE n.user_id = :viewer_id';
+        }
+    }
+
+    $sql .= ' ORDER BY n.updated_at DESC, n.id DESC';
+
+    $st = $pdo->prepare($sql);
+    $st->execute($params);
+    $rows = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    if (!$rows) {
+        return [];
+    }
+
+    $noteIds = [];
+    foreach ($rows as $row) {
+        $nid = (int)($row['id'] ?? 0);
+        if ($nid > 0) {
+            $noteIds[] = $nid;
+        }
+    }
+
+    $metaMap = notes_fetch_page_meta_bulk($noteIds);
+    $tagMap  = notes_fetch_tags_for_notes($noteIds);
+
+    $result = [];
+    foreach ($rows as $row) {
+        $nid = (int)($row['id'] ?? 0);
+        if ($nid <= 0) {
+            continue;
+        }
+
+        $meta = $metaMap[$nid] ?? [
+            'icon'       => null,
+            'cover_url'  => null,
+            'status'     => NOTES_DEFAULT_STATUS,
+            'properties' => notes_default_properties(),
+        ];
+
+        $result[] = [
+            'id'            => $nid,
+            'title'         => trim((string)($row['title'] ?? '')),
+            'note_date'     => $row['note_date'] ?? null,
+            'body'          => (string)($row['body'] ?? ''),
+            'created_at'    => $row['created_at'] ?? null,
+            'updated_at'    => $row['updated_at'] ?? null,
+            'owner_id'      => (int)($row['user_id'] ?? 0),
+            'owner_label'   => notes_user_label((int)($row['user_id'] ?? 0)),
+            'meta'          => $meta,
+            'tags'          => $tagMap[$nid] ?? [],
+            'share_ids'     => notes_get_share_user_ids($nid),
+            'comment_count' => notes_comment_count($nid),
+        ];
+    }
+
+    return $result;
+}
+
 function notes_allowed_block_types(): array {
     return ['heading1','heading2','heading3','paragraph','todo','bulleted','numbered','quote','callout','divider'];
 }
