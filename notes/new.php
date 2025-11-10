@@ -184,7 +184,7 @@ $configAttr = htmlspecialchars($composerJson, ENT_QUOTES, 'UTF-8');
   </header>
 
   <?php if ($errors): ?>
-    <div class="flash flash-error"><?= sanitize(implode(' ', $errors)); ?></div>
+    <div class="flash flash-error"><?php echo  sanitize(implode(' ', $errors)); ?></div>
   <?php endif; ?>
 
   <form method="post" enctype="multipart/form-data" class="obsidian-form" id="newNoteForm" novalidate>
@@ -208,8 +208,8 @@ $configAttr = htmlspecialchars($composerJson, ENT_QUOTES, 'UTF-8');
                 $tplShareLabels = $tpl['share_labels'] ?? [];
                 $sharePayload = htmlspecialchars(json_encode($tplShareLabels, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), ENT_QUOTES, 'UTF-8');
               ?>
-              <option value="<?= $tplId; ?>" data-share="<?= $sharePayload; ?>"<?= $selectedTemplateId === $tplId ? ' selected' : ''; ?>>
-                <?= sanitize($tplIcon . ' ' . $tplName); ?>
+              <option value="<?php echo  $tplId; ?>" data-share="<?php echo  $sharePayload; ?>"<?php echo  $selectedTemplateId === $tplId ? ' selected' : ''; ?>>
+                <?php echo  sanitize($tplIcon . ' ' . $tplName); ?>
               </option>
               <?php endforeach; ?>
             </select>
@@ -221,7 +221,7 @@ $configAttr = htmlspecialchars($composerJson, ENT_QUOTES, 'UTF-8');
           <div class="obsidian-template-preview" data-template-share-preview>
             <?php if ($templateSharePreviewLabels): ?>
               <?php foreach ($templateSharePreviewLabels as $label): ?>
-                <span class="obsidian-pill"><?= sanitize($label); ?></span>
+                <span class="obsidian-pill"><?php echo  sanitize($label); ?></span>
               <?php endforeach; ?>
             <?php else: ?>
               <span class="obsidian-pill is-muted">Private</span>
@@ -236,18 +236,18 @@ $configAttr = htmlspecialchars($composerJson, ENT_QUOTES, 'UTF-8');
               $tplIcon = $tplIcon !== '' ? $tplIcon : '📄';
               $shareLabels = $tpl['share_labels'] ?? [];
             ?>
-            <li class="obsidian-template-card<?= $selectedTemplateId === $tplId ? ' is-active' : ''; ?>" data-template-card="<?= $tplId; ?>">
-              <button type="button" class="obsidian-template-card__body" data-template-option="<?= $tplId; ?>">
-                <span class="obsidian-template-card__icon"><?= sanitize($tplIcon); ?></span>
+            <li class="obsidian-template-card<?php echo  $selectedTemplateId === $tplId ? ' is-active' : ''; ?>" data-template-card="<?php echo  $tplId; ?>">
+              <button type="button" class="obsidian-template-card__body" data-template-option="<?php echo  $tplId; ?>">
+                <span class="obsidian-template-card__icon"><?php echo  sanitize($tplIcon); ?></span>
                 <div>
-                  <strong><?= sanitize($tplName); ?></strong>
-                  <?php if ($tplTitle !== ''): ?><em><?= sanitize($tplTitle); ?></em><?php endif; ?>
+                  <strong><?php echo  sanitize($tplName); ?></strong>
+                  <?php if ($tplTitle !== ''): ?><em><?php echo  sanitize($tplTitle); ?></em><?php endif; ?>
                 </div>
               </button>
               <div class="obsidian-template-card__shares">
                 <?php if ($shareLabels): ?>
                   <?php foreach ($shareLabels as $label): ?>
-                    <span class="obsidian-pill"><?= sanitize($label); ?></span>
+                    <span class="obsidian-pill"><?php echo  sanitize($label); ?></span>
                   <?php endforeach; ?>
                 <?php else: ?>
                   <span class="obsidian-pill is-muted">Private</span>
@@ -265,13 +265,13 @@ $configAttr = htmlspecialchars($composerJson, ENT_QUOTES, 'UTF-8');
           </header>
           <label class="obsidian-field">
             <span>Date</span>
-            <input type="date" name="note_date" value="<?= sanitize($noteDateValue); ?>" required>
+            <input type="date" name="note_date" value="<?php echo  sanitize($noteDateValue); ?>" required>
           </label>
           <label class="obsidian-field">
             <span>Status</span>
             <select name="status">
               <?php foreach ($statuses as $slug => $label): ?>
-                <option value="<?= sanitize($slug); ?>"<?= notes_normalize_status($statusValue) === $slug ? ' selected' : ''; ?>><?= sanitize($label); ?></option>
+                <option value="<?php echo  sanitize($slug); ?>"<?php echo  notes_normalize_status($statusValue) === $slug ? ' selected' : ''; ?>><?php echo  sanitize($label); ?></option>
               <?php endforeach; ?>
             </select>
           </label>
@@ -286,7 +286,7 @@ $configAttr = htmlspecialchars($composerJson, ENT_QUOTES, 'UTF-8');
           <?php if ($tagOptions): ?>
           <div class="obsidian-tag-suggestions" aria-hidden="true">
             <?php foreach (array_slice($tagOptions, 0, 4) as $tag): ?>
-              <span class="obsidian-pill"><?= sanitize('#' . $tag['label']); ?></span>
+              <span class="obsidian-pill"><?php echo  sanitize('#' . $tag['label']); ?></span>
             <?php endforeach; ?>
           </div>
           <?php endif; ?>
@@ -298,21 +298,21 @@ $configAttr = htmlspecialchars($composerJson, ENT_QUOTES, 'UTF-8');
           </header>
           <label class="obsidian-field">
             <span>Project</span>
-            <input type="text" name="property_project" value="<?= sanitize($propertyProject); ?>" placeholder="Site or initiative">
+            <input type="text" name="property_project" value="<?php echo  sanitize($propertyProject); ?>" placeholder="Site or initiative">
           </label>
           <label class="obsidian-field">
             <span>Location</span>
-            <input type="text" name="property_location" value="<?= sanitize($propertyLocation); ?>" placeholder="Area, floor, building">
+            <input type="text" name="property_location" value="<?php echo  sanitize($propertyLocation); ?>" placeholder="Area, floor, building">
           </label>
           <label class="obsidian-field">
             <span>Due date</span>
-            <input type="date" name="property_due_date" value="<?= sanitize($propertyDueDate); ?>">
+            <input type="date" name="property_due_date" value="<?php echo  sanitize($propertyDueDate); ?>">
           </label>
           <label class="obsidian-field">
             <span>Priority</span>
             <select name="property_priority">
               <?php foreach ($priorityOptions as $option): ?>
-                <option value="<?= sanitize($option); ?>"<?= $propertyPriority === $option ? ' selected' : ''; ?>><?= sanitize($option); ?></option>
+                <option value="<?php echo  sanitize($option); ?>"<?php echo  $propertyPriority === $option ? ' selected' : ''; ?>><?php echo  sanitize($option); ?></option>
               <?php endforeach; ?>
             </select>
           </label>
@@ -321,9 +321,9 @@ $configAttr = htmlspecialchars($composerJson, ENT_QUOTES, 'UTF-8');
         <section class="obsidian-panel obsidian-panel--attachments">
           <header class="obsidian-panel__header">
             <h2>Attachments</h2>
-            <p>Upload reference photos (max <?= (int)NOTES_MAX_MB; ?> MB each).</p>
+            <p>Upload reference photos (max <?php echo  (int)NOTES_MAX_MB; ?> MB each).</p>
           </header>
-          <div class="obsidian-dropzone" id="dropZone" data-max-mb="<?= (int)NOTES_MAX_MB; ?>">
+          <div class="obsidian-dropzone" id="dropZone" data-max-mb="<?php echo  (int)NOTES_MAX_MB; ?>">
             <div class="obsidian-dropzone__icon">📎</div>
             <div class="obsidian-dropzone__copy">
               <strong>Drag & drop images</strong>
@@ -332,16 +332,16 @@ $configAttr = htmlspecialchars($composerJson, ENT_QUOTES, 'UTF-8');
           </div>
           <div class="obsidian-uploader-grid" id="uploaderGrid">
             <?php for ($i = 1; $i <= 3; $i++): ?>
-            <div class="obsidian-uploader" data-slot="<?= $i; ?>">
-              <div class="obsidian-uploader__preview" id="preview<?= $i; ?>">
-                <span class="obsidian-uploader__placeholder">Photo <?= $i; ?></span>
+            <div class="obsidian-uploader" data-slot="<?php echo  $i; ?>">
+              <div class="obsidian-uploader__preview" id="preview<?php echo  $i; ?>">
+                <span class="obsidian-uploader__placeholder">Photo <?php echo  $i; ?></span>
               </div>
               <div class="obsidian-uploader__actions">
                 <label class="btn obsidian-btn">
                   Choose
-                  <input id="photo<?= $i; ?>" type="file" name="photo<?= $i; ?>" accept="image/*,image/heic,image/heif" class="visually-hidden">
+                  <input id="photo<?php echo  $i; ?>" type="file" name="photo<?php echo  $i; ?>" accept="image/*,image/heic,image/heif" class="visually-hidden">
                 </label>
-                <button type="button" class="btn obsidian-btn--ghost" data-clear="<?= $i; ?>">Clear</button>
+                <button type="button" class="btn obsidian-btn--ghost" data-clear="<?php echo  $i; ?>">Clear</button>
               </div>
             </div>
             <?php endfor; ?>
@@ -350,29 +350,29 @@ $configAttr = htmlspecialchars($composerJson, ENT_QUOTES, 'UTF-8');
       </aside>
 
       <div class="obsidian-main obsidian-main--composer">
-        <div class="obsidian-editor" data-note-composer data-config="<?= $configAttr; ?>">
+        <div class="obsidian-editor" data-note-composer data-config="<?php echo  $configAttr; ?>">
           <input type="hidden" name="blocks_payload" data-blocks-field>
           <input type="hidden" name="tags_payload" data-tags-field>
-          <textarea name="body" data-body-fallback class="visually-hidden"><?= sanitize($bodyFallback); ?></textarea>
+          <textarea name="body" data-body-fallback class="visually-hidden"><?php echo  sanitize($bodyFallback); ?></textarea>
 
           <div class="obsidian-editor__cover" data-cover-preview>
             <div class="obsidian-editor__cover-overlay">
               <label class="obsidian-field">
                 <span>Cover image URL</span>
-                <input type="url" name="cover_url" data-cover-input placeholder="https://…" value="<?= sanitize($coverValue); ?>">
+                <input type="url" name="cover_url" data-cover-input placeholder="https://…" value="<?php echo  sanitize($coverValue); ?>">
               </label>
               <button type="button" class="btn obsidian-btn--ghost small" data-cover-clear>Remove cover</button>
             </div>
           </div>
 
           <div class="obsidian-editor__head">
-            <span class="obsidian-editor__icon" data-icon-preview><?= sanitize($iconValue ?: '📝'); ?></span>
+            <span class="obsidian-editor__icon" data-icon-preview><?php echo  sanitize($iconValue ?: '📝'); ?></span>
             <div class="obsidian-editor__titlegroup">
               <label class="obsidian-field obsidian-field--icon">
                 <span>Icon</span>
-                <input type="text" name="icon" maxlength="4" data-icon-input placeholder="💡" value="<?= sanitize($iconValue); ?>">
+                <input type="text" name="icon" maxlength="4" data-icon-input placeholder="💡" value="<?php echo  sanitize($iconValue); ?>">
               </label>
-              <input class="obsidian-editor__title" type="text" name="title" value="<?= sanitize($formTitle); ?>" placeholder="Untitled" required>
+              <input class="obsidian-editor__title" type="text" name="title" value="<?php echo  sanitize($formTitle); ?>" placeholder="Untitled" required>
             </div>
           </div>
 
@@ -402,7 +402,7 @@ $configAttr = htmlspecialchars($composerJson, ENT_QUOTES, 'UTF-8');
       </div>
     </div>
 
-    <input type="hidden" name="<?= CSRF_TOKEN_NAME; ?>" value="<?= csrf_token(); ?>">
+    <input type="hidden" name="<?php echo  CSRF_TOKEN_NAME; ?>" value="<?php echo  csrf_token(); ?>">
   </form>
 </section>
 

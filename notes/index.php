@@ -57,6 +57,69 @@ if (is_post()) {
                 $errorMessage = 'Failed to update template shares.';
             }
         }
+    } elseif (isset($_POST['quick_note'])) {
+        $title    = trim((string)($_POST['title'] ?? ''));
+        $noteDate = trim((string)($_POST['note_date'] ?? date('Y-m-d')));
+        $status   = notes_normalize_status($_POST['status'] ?? NOTES_DEFAULT_STATUS);
+        $icon     = trim((string)($_POST['icon'] ?? ''));
+        $coverUrl = trim((string)($_POST['cover_url'] ?? ''));
+        $body     = trim((string)($_POST['body'] ?? ''));
+        $tagInput = trim((string)($_POST['quick_tags'] ?? ''));
+
+        if ($title === '') {
+            $errorMessage = 'Title is required to capture a note.';
+        } elseif ($noteDate === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $noteDate)) {
+            $errorMessage = 'Provide a valid date (YYYY-MM-DD).';
+        } else {
+            $tags = [];
+            if ($tagInput !== '') {
+                $parts = preg_split('/[,;\n]/', $tagInput) ?: [];
+                foreach ($parts as $part) {
+                    $label = trim((string)$part);
+                    if ($label !== '') {
+                        $tags[] = ['label' => $label];
+                    }
+                }
+            }
+            $normalizedTags = notes_normalize_tags_input($tags);
+
+            $blocks = [];
+            if ($body !== '') {
+                $blocks[] = [
+                    'uid'  => notes_generate_block_uid(),
+                    'type' => 'paragraph',
+                    'text' => $body,
+                ];
+            }
+
+            try {
+                $noteId = notes_insert([
+                    'user_id'    => $meId,
+                    'note_date'  => $noteDate,
+                    'title'      => $title,
+                    'body'       => $body,
+                    'icon'       => $icon,
+                    'cover_url'  => $coverUrl,
+                    'status'     => $status,
+                    'properties' => notes_default_properties(),
+                    'tags'       => $normalizedTags,
+                    'blocks'     => $blocks,
+                ]);
+                log_event('note.create.quick', 'note', $noteId);
+                $payload = notes__hydrate_index_payload($noteId);
+                if ($payload) {
+                    $successPayload = [
+                        'ok'      => true,
+                        'note'    => $payload,
+                    ];
+                } else {
+                    $errorMessage = 'Note created but could not refresh the workspace.';
+                }
+            } catch (Throwable $e) {
+                error_log('quick note capture failed: ' . $e->getMessage());
+                $errorMessage = 'Unable to capture note.';
+            }
+        }
     }
 
     if ($isAjax) {
@@ -152,6 +215,91 @@ if (!function_exists('notes__format_date')) {
     }
 }
 
+if (!function_exists('notes__hydrate_index_payload')) {
+    function notes__hydrate_index_payload(int $noteId): ?array {
+        $note = notes_fetch($noteId);
+        if (!$note) {
+            return null;
+        }
+
+        $meta = notes_fetch_page_meta($noteId);
+        $properties = notes_normalize_properties($meta['properties'] ?? notes_default_properties());
+        $status = notes_normalize_status($meta['status'] ?? NOTES_DEFAULT_STATUS);
+        $icon = trim((string)($meta['icon'] ?? ''));
+        $coverUrl = trim((string)($meta['cover_url'] ?? ''));
+
+        $tags = notes_fetch_note_tags($noteId);
+        $tagPayload = array_map(static function ($tag): array {
+            return [
+                'label' => (string)($tag['label'] ?? ''),
+                'color' => (string)($tag['color'] ?? ''),
+            ];
+        }, is_array($tags) ? $tags : []);
+
+        $shareDetails = notes_get_share_details($noteId);
+        $shareIds = [];
+        $shareLabels = [];
+        foreach ($shareDetails as $share) {
+            $sid = (int)($share['id'] ?? 0);
+            if ($sid <= 0) {
+                continue;
+            }
+            $shareIds[] = $sid;
+            $label = trim((string)($share['label'] ?? ''));
+            if ($label !== '') {
+                $shareLabels[] = $label;
+            }
+        }
+
+        $excerpt = notes__excerpt((string)($note['body'] ?? ''), 220);
+        $photoCount = count(array_filter(notes_fetch_photos($noteId)));
+        $commentCount = notes_comment_count($noteId);
+
+        $timestamp = $note['updated_at'] ?? $note['created_at'] ?? $note['note_date'] ?? null;
+        $updatedRelative = $timestamp ? notes__relative_time((string)$timestamp) : '';
+        $updatedAbsolute = '';
+        if ($timestamp) {
+            try {
+                $updatedAbsolute = (new DateTimeImmutable((string)$timestamp))->format('Y-m-d H:i');
+            } catch (Throwable $e) {
+                $updatedAbsolute = (string)$timestamp;
+            }
+        }
+
+        $ownerId = (int)($note['user_id'] ?? 0);
+
+        return [
+            'id'             => $noteId,
+            'title'          => trim((string)($note['title'] ?? '')) ?: 'Untitled',
+            'status'         => $status,
+            'statusLabel'    => notes_status_label($status),
+            'statusBadge'    => notes_status_badge_class($status),
+            'icon'           => $icon,
+            'coverUrl'       => $coverUrl,
+            'excerpt'        => $excerpt,
+            'ownerId'        => $ownerId,
+            'ownerLabel'     => notes_user_label($ownerId),
+            'isOwner'        => $ownerId === (int)(current_user()['id'] ?? 0),
+            'isShared'       => $shareIds && $ownerId !== (int)(current_user()['id'] ?? 0),
+            'properties'     => $properties,
+            'tags'           => $tagPayload,
+            'shareIds'       => $shareIds,
+            'shareLabels'    => $shareLabels,
+            'shareCount'     => count($shareIds),
+            'photoCount'     => $photoCount,
+            'commentCount'   => $commentCount,
+            'noteDate'       => $note['note_date'] ?? null,
+            'updatedRelative'=> $updatedRelative,
+            'updatedAbsolute'=> $updatedAbsolute,
+            'canShare'       => notes_can_share($note),
+            'links'          => [
+                'view' => 'view.php?id=' . $noteId,
+                'edit' => 'edit.php?id=' . $noteId,
+            ],
+        ];
+    }
+}
+
 $hasNoteDate    = notes__col_exists($pdo, 'notes', 'note_date');
 $hasCreatedAt   = notes__col_exists($pdo, 'notes', 'created_at');
 $hasUpdatedAt   = notes__col_exists($pdo, 'notes', 'updated_at');
@@ -187,6 +335,8 @@ $viewInput = $_GET['view'] ?? '';
 if ($viewInput === 'sticky') {
     $viewInput = 'board';
 }
+
+$today = date('Y-m-d');
 if ($viewInput && in_array($viewInput, $allowedViews, true)) {
     $view = $viewInput;
 } else {
@@ -424,6 +574,61 @@ foreach ($rows as $candidate) {
 if ($activeNote === null && $rows) {
     $activeNote = $rows[0];
 }
+if ($activeNote === null && $rows) {
+    $activeNote = $rows[0];
+}
+
+$totalNotes       = count($rows);
+$ownedCount       = 0;
+$sharedCount      = 0;
+$photoRichCount   = 0;
+$commentRichCount = 0;
+$photoTotal       = 0;
+$latestTimestamp  = null;
+$statusCounts     = array_fill_keys(array_keys($statuses), 0);
+
+foreach ($rows as $row) {
+    $isOwner  = !empty($row['is_owner']);
+    $isShared = !empty($row['is_shared']) && !$isOwner;
+    if ($isOwner) {
+        $ownedCount++;
+    }
+    if ($isShared) {
+        $sharedCount++;
+    }
+    $pc = (int)($row['photo_count'] ?? 0);
+    $cc = (int)($row['comment_count'] ?? 0);
+    if ($pc > 0) {
+        $photoRichCount++;
+    }
+    if ($cc > 0) {
+        $commentRichCount++;
+    }
+    $photoTotal += $pc;
+
+    $status = $row['_status'] ?? NOTES_DEFAULT_STATUS;
+    if (!isset($statusCounts[$status])) {
+        $statusCounts[$status] = 0;
+    }
+    $statusCounts[$status]++;
+
+    $candidateTimestamp = $row['updated_at'] ?? $row['created_at'] ?? $row['note_date'] ?? null;
+    if ($candidateTimestamp !== null) {
+        if ($latestTimestamp === null || strcmp((string)$candidateTimestamp, (string)$latestTimestamp) > 0) {
+            $latestTimestamp = (string)$candidateTimestamp;
+        }
+    }
+}
+
+$avgPhotos        = $totalNotes > 0 ? $photoTotal / $totalNotes : 0.0;
+$avgPhotosRounded = $avgPhotos > 0 ? round($avgPhotos, 1) : 0.0;
+$percentOwned     = $totalNotes > 0 ? round(($ownedCount / $totalNotes) * 100) : 0;
+$percentShared    = $totalNotes > 0 ? round(($sharedCount / $totalNotes) * 100) : 0;
+$activeCount      = $totalNotes - ($statusCounts['archived'] ?? 0);
+$completedCount   = $statusCounts['complete'] ?? 0;
+$inProgressCount  = $statusCounts['in_progress'] ?? 0;
+$reviewCount      = $statusCounts['review'] ?? 0;
+$blockedCount     = $statusCounts['blocked'] ?? 0;
 
 $totalNotes       = count($rows);
 $ownedCount       = 0;
@@ -566,7 +771,7 @@ include __DIR__ . '/../includes/header.php';
 ?>
 
 
-<section class="obsidian-shell" data-theme="obsidian">
+<section class="obsidian-shell" data-theme="obsidian" data-index-shell data-csrf="<?php echo  sanitize($csrfToken); ?>">
   <header class="obsidian-header">
     <div class="obsidian-header__titles">
       <span class="obsidian-header__eyebrow">Vault overview</span>
@@ -574,30 +779,31 @@ include __DIR__ . '/../includes/header.php';
     </div>
     <div class="obsidian-header__actions">
       <button type="button" class="obsidian-header__command" data-command-open>⌘K Command palette</button>
+      <button type="button" class="obsidian-header__quick" data-quick-open>Quick capture</button>
       <a class="btn obsidian-header__new" href="new.php">New note</a>
     </div>
   </header>
-  <div class="obsidian-layout" data-index-shell>
+  <div class="obsidian-layout">
     <aside class="obsidian-sidebar">
       <form method="get" action="index.php" class="obsidian-search" autocomplete="off">
         <label class="obsidian-search__field">
           <span>Search vault</span>
-          <input type="search" name="q" value="<?= sanitize($search); ?>" placeholder="Title, tag, or text">
+          <input type="search" name="q" value="<?php echo  sanitize($search); ?>" placeholder="Title, tag, or text">
         </label>
         <?php if ($statusFilter !== ''): ?>
-          <input type="hidden" name="status" value="<?= sanitize($statusFilter); ?>">
+          <input type="hidden" name="status" value="<?php echo  sanitize($statusFilter); ?>">
         <?php endif; ?>
         <?php if ($tagFilter !== ''): ?>
-          <input type="hidden" name="tag" value="<?= sanitize($tagFilter); ?>">
+          <input type="hidden" name="tag" value="<?php echo  sanitize($tagFilter); ?>">
         <?php endif; ?>
         <div class="obsidian-search__meta">
           <span class="obsidian-search__hint">Press <kbd>/</kbd> to focus search</span>
           <div class="obsidian-search__meta-actions">
             <?php if ($statusFilter !== ''): ?>
-              <span class="obsidian-search__chip">Status: <?= sanitize($statuses[$statusFilter] ?? notes_status_label($statusFilter)); ?></span>
+              <span class="obsidian-search__chip">Status: <?php echo  sanitize($statuses[$statusFilter] ?? notes_status_label($statusFilter)); ?></span>
             <?php endif; ?>
             <?php if ($tagFilter !== ''): ?>
-              <span class="obsidian-search__chip">Tag: <?= sanitize($tagFilter); ?></span>
+              <span class="obsidian-search__chip">Tag: <?php echo  sanitize($tagFilter); ?></span>
             <?php endif; ?>
             <?php if ($search !== '' || $statusFilter !== '' || $tagFilter !== ''): ?>
               <a class="obsidian-search__reset" href="index.php">Clear filters</a>
@@ -606,19 +812,19 @@ include __DIR__ . '/../includes/header.php';
         </div>
       </form>
       <div class="obsidian-summary">
-        <div><span>Total notes</span><strong><?= number_format($totalNotes); ?></strong></div>
-        <div><span>Shared</span><strong><?= number_format($sharedCount); ?></strong></div>
-        <div><span>Comments</span><strong><?= number_format($commentRichCount); ?></strong></div>
-        <div><span>Photos</span><strong><?= number_format($photoRichCount); ?></strong></div>
-        <div><span>Updated</span><strong><?= sanitize($lastUpdateHint); ?></strong></div>
+        <div data-summary-total><span>Total notes</span><strong><?php echo  number_format($totalNotes); ?></strong></div>
+        <div data-summary-shared><span>Shared</span><strong><?php echo  number_format($sharedCount); ?></strong></div>
+        <div data-summary-comments><span>Comments</span><strong><?php echo  number_format($commentRichCount); ?></strong></div>
+        <div data-summary-photos><span>Photos</span><strong><?php echo  number_format($photoRichCount); ?></strong></div>
+        <div data-summary-updated><span>Updated</span><strong><?php echo  sanitize($lastUpdateHint); ?></strong></div>
       </div>
       <div class="obsidian-statuses">
         <h2>Status lanes</h2>
         <ul>
           <?php foreach ($statuses as $slug => $label): ?>
             <li>
-              <span class="badge <?= sanitize(notes_status_badge_class($slug)); ?>"><?= sanitize($label); ?></span>
-              <span><?= number_format(count($statusColumns[$slug] ?? [])); ?></span>
+              <span class="badge <?php echo  sanitize(notes_status_badge_class($slug)); ?>"><?php echo  sanitize($label); ?></span>
+              <span><?php echo  number_format(count($statusColumns[$slug] ?? [])); ?></span>
             </li>
           <?php endforeach; ?>
         </ul>
@@ -639,21 +845,21 @@ include __DIR__ . '/../includes/header.php';
                 $tplDisplayIcon = $tplIcon !== '' ? $tplIcon : '📄';
                 $tplPayload = htmlspecialchars(json_encode($tpl['payload'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), ENT_QUOTES, 'UTF-8');
               ?>
-              <li class="obsidian-template" data-template-id="<?= $tplId; ?>">
+              <li class="obsidian-template" data-template-id="<?php echo  $tplId; ?>">
                 <div class="obsidian-template__row">
-                  <a class="obsidian-template__apply" href="new.php?template=<?= $tplId; ?>">
-                    <span class="obsidian-template__icon"><?= sanitize($tplDisplayIcon); ?></span>
+                  <a class="obsidian-template__apply" href="new.php?template=<?php echo  $tplId; ?>">
+                    <span class="obsidian-template__icon"><?php echo  sanitize($tplDisplayIcon); ?></span>
                     <span>
-                      <strong><?= sanitize($tplName); ?></strong>
-                      <?php if (!empty($tpl['title'])): ?><em><?= sanitize($tpl['title']); ?></em><?php endif; ?>
+                      <strong><?php echo  sanitize($tplName); ?></strong>
+                      <?php if (!empty($tpl['title'])): ?><em><?php echo  sanitize($tpl['title']); ?></em><?php endif; ?>
                     </span>
                   </a>
-                  <button type="button" class="obsidian-template__share" data-template-share-button="<?= $tplId; ?>" data-template-share="<?= $tplPayload; ?>">Share</button>
+                  <button type="button" class="obsidian-template__share" data-template-share-button="<?php echo  $tplId; ?>" data-template-share="<?php echo  $tplPayload; ?>">Share</button>
                 </div>
-                <div class="obsidian-template__sharelist" data-template-share-list="<?= $tplId; ?>">
+                <div class="obsidian-template__sharelist" data-template-share-list="<?php echo  $tplId; ?>">
                   <?php if (!empty($tpl['share_labels'])): ?>
                     <?php foreach ($tpl['share_labels'] as $label): ?>
-                      <span class="obsidian-pill"><?= sanitize($label); ?></span>
+                      <span class="obsidian-pill"><?php echo  sanitize($label); ?></span>
                     <?php endforeach; ?>
                   <?php else: ?>
                     <span class="obsidian-pill is-muted">Private</span>
@@ -675,12 +881,12 @@ include __DIR__ . '/../includes/header.php';
                 $tplIcon = trim((string)($tpl['icon'] ?? ''));
                 $tplDisplayIcon = $tplIcon !== '' ? $tplIcon : '📄';
               ?>
-              <li class="obsidian-template obsidian-template--shared" data-template-id="<?= $tplId; ?>">
-                <a class="obsidian-template__apply" href="new.php?template=<?= $tplId; ?>">
-                  <span class="obsidian-template__icon"><?= sanitize($tplDisplayIcon); ?></span>
+              <li class="obsidian-template obsidian-template--shared" data-template-id="<?php echo  $tplId; ?>">
+                <a class="obsidian-template__apply" href="new.php?template=<?php echo  $tplId; ?>">
+                  <span class="obsidian-template__icon"><?php echo  sanitize($tplDisplayIcon); ?></span>
                   <span>
-                    <strong><?= sanitize($tplName); ?></strong>
-                    <?php if (!empty($tpl['shared_from'])): ?><em>Shared by <?= sanitize($tpl['shared_from']); ?></em><?php endif; ?>
+                    <strong><?php echo  sanitize($tplName); ?></strong>
+                    <?php if (!empty($tpl['shared_from'])): ?><em>Shared by <?php echo  sanitize($tpl['shared_from']); ?></em><?php endif; ?>
                   </span>
                 </a>
               </li>
@@ -712,15 +918,15 @@ include __DIR__ . '/../includes/header.php';
               $statusLabel = notes_status_label($status);
               $statusClass = notes_status_badge_class($status);
             ?>
-            <article class="obsidian-note<?= ($activeNote && (int)$activeNote['id'] === $noteId) ? ' is-active' : ''; ?>" data-note-id="<?= $noteId; ?>" data-note='<?= $payloadJson; ?>' data-note-item>
+            <article class="obsidian-note<?php echo  ($activeNote && (int)$activeNote['id'] === $noteId) ? ' is-active' : ''; ?>" data-note-id="<?php echo  $noteId; ?>" data-note='<?php echo  $payloadJson; ?>' data-note-item>
               <header class="obsidian-note__header">
-                <span class="obsidian-note__icon"><?= sanitize($icon); ?></span>
+                <span class="obsidian-note__icon"><?php echo  sanitize($icon); ?></span>
                 <div class="obsidian-note__titles">
-                  <h3><?= sanitize($title); ?></h3>
+                  <h3><?php echo  sanitize($title); ?></h3>
                   <div class="obsidian-note__meta">
-                    <span class="badge <?= sanitize($statusClass); ?>"><?= sanitize($statusLabel); ?></span>
+                    <span class="badge <?php echo  sanitize($statusClass); ?>"><?php echo  sanitize($statusLabel); ?></span>
                     <?php if ($note['_updated_relative']): ?>
-                      <span class="obsidian-note__timestamp"><?= sanitize($note['_updated_relative']); ?></span>
+                      <span class="obsidian-note__timestamp"><?php echo  sanitize($note['_updated_relative']); ?></span>
                     <?php endif; ?>
                     <?php if (!empty($note['_is_shared'])): ?>
                       <span class="obsidian-note__shared">Shared</span>
@@ -728,18 +934,18 @@ include __DIR__ . '/../includes/header.php';
                   </div>
                 </div>
                 <div class="obsidian-note__counts">
-                  <span class="obsidian-note__pill" data-note-share-count="<?= $noteId; ?>">👥 <?= number_format($note['_share_count']); ?></span>
-                  <span class="obsidian-note__pill">💬 <?= number_format((int)($note['comment_count'] ?? 0)); ?></span>
-                  <span class="obsidian-note__pill">📸 <?= number_format((int)($note['photo_count'] ?? 0)); ?></span>
+                  <span class="obsidian-note__pill" data-note-share-count="<?php echo  $noteId; ?>">👥 <?php echo  number_format($note['_share_count']); ?></span>
+                  <span class="obsidian-note__pill">💬 <?php echo  number_format((int)($note['comment_count'] ?? 0)); ?></span>
+                  <span class="obsidian-note__pill">📸 <?php echo  number_format((int)($note['photo_count'] ?? 0)); ?></span>
                 </div>
               </header>
               <?php if ($note['_excerpt']): ?>
-                <p class="obsidian-note__excerpt"><?= sanitize($note['_excerpt']); ?></p>
+                <p class="obsidian-note__excerpt"><?php echo  sanitize($note['_excerpt']); ?></p>
               <?php endif; ?>
               <?php if ($note['_tags']): ?>
                 <div class="obsidian-note__tags">
                   <?php foreach ($note['_tags'] as $tag): $color = $tag['color'] ?? '#6366F1'; ?>
-                    <span class="obsidian-tag" style="--tag-color: <?= sanitize($color); ?>"><?= sanitize($tag['label'] ?? ''); ?></span>
+                    <span class="obsidian-tag" style="--tag-color: <?php echo  sanitize($color); ?>"><?php echo  sanitize($tag['label'] ?? ''); ?></span>
                   <?php endforeach; ?>
                 </div>
               <?php endif; ?>
@@ -760,50 +966,50 @@ include __DIR__ . '/../includes/header.php';
               $previewIcon = $firstChar !== '' ? strtoupper($firstChar) : '📝';
           }
         ?>
-        <div class="obsidian-preview__scroll" data-active-note-id="<?= (int)($payload['id'] ?? 0); ?>">
+        <div class="obsidian-preview__scroll" data-active-note-id="<?php echo  (int)($payload['id'] ?? 0); ?>">
           <div class="obsidian-preview__header">
-            <span class="obsidian-preview__icon" data-preview-icon><?= sanitize($previewIcon); ?></span>
+            <span class="obsidian-preview__icon" data-preview-icon><?php echo  sanitize($previewIcon); ?></span>
             <div>
-              <span class="badge <?= sanitize($payload['statusBadge']); ?>" data-preview-status><?= sanitize($payload['statusLabel']); ?></span>
-              <h2 data-preview-title><?= sanitize($previewTitle); ?></h2>
+              <span class="badge <?php echo  sanitize($payload['statusBadge']); ?>" data-preview-status><?php echo  sanitize($payload['statusLabel']); ?></span>
+              <h2 data-preview-title><?php echo  sanitize($previewTitle); ?></h2>
               <?php if (!empty($payload['updatedRelative'])): ?>
-                <p class="obsidian-preview__timestamp">Updated <?= sanitize($payload['updatedRelative']); ?></p>
+                <p class="obsidian-preview__timestamp">Updated <?php echo  sanitize($payload['updatedRelative']); ?></p>
               <?php endif; ?>
             </div>
           </div>
           <div class="obsidian-preview__actions">
-            <a class="btn obsidian-primary" href="<?= sanitize($payload['links']['view']); ?>" data-preview-view>Open note</a>
-            <a class="btn obsidian-btn" href="<?= sanitize($payload['links']['edit']); ?>" data-preview-edit>Edit</a>
+            <a class="btn obsidian-primary" href="<?php echo  sanitize($payload['links']['view']); ?>" data-preview-view>Open note</a>
+            <a class="btn obsidian-btn" href="<?php echo  sanitize($payload['links']['edit']); ?>" data-preview-edit>Edit</a>
             <?php if (!empty($payload['canShare'])): ?>
-              <button type="button" class="btn obsidian-btn--ghost" data-open-note-share="<?= (int)($payload['id'] ?? 0); ?>">Manage access</button>
+              <button type="button" class="btn obsidian-btn--ghost" data-open-note-share="<?php echo  (int)($payload['id'] ?? 0); ?>">Manage access</button>
             <?php endif; ?>
           </div>
           <dl class="obsidian-preview__meta">
             <div>
               <dt>Owner</dt>
-              <dd data-preview-owner><?= sanitize($payload['ownerLabel']); ?></dd>
+              <dd data-preview-owner><?php echo  sanitize($payload['ownerLabel']); ?></dd>
             </div>
             <div>
               <dt>Photos</dt>
-              <dd data-preview-photos><?= number_format((int)($payload['photoCount'] ?? 0)); ?></dd>
+              <dd data-preview-photos><?php echo  number_format((int)($payload['photoCount'] ?? 0)); ?></dd>
             </div>
             <div>
               <dt>Comments</dt>
-              <dd data-preview-comments><?= number_format((int)($payload['commentCount'] ?? 0)); ?></dd>
+              <dd data-preview-comments><?php echo  number_format((int)($payload['commentCount'] ?? 0)); ?></dd>
             </div>
             <div>
               <dt>Note date</dt>
-              <dd data-preview-date><?= sanitize(notes__format_date($payload['noteDate'] ?? '')); ?></dd>
+              <dd data-preview-date><?php echo  sanitize(notes__format_date($payload['noteDate'] ?? '')); ?></dd>
             </div>
           </dl>
           <div class="obsidian-preview__properties" data-preview-properties>
             <?php foreach ($payload['properties'] as $key => $value): $value = trim((string)$value); if ($value === '') continue; ?>
-              <div><span><?= sanitize($propertyLabels[$key] ?? ucfirst($key)); ?></span><strong><?= sanitize($value); ?></strong></div>
+              <div><span><?php echo  sanitize($propertyLabels[$key] ?? ucfirst($key)); ?></span><strong><?php echo  sanitize($value); ?></strong></div>
             <?php endforeach; ?>
           </div>
           <div class="obsidian-preview__tags" data-preview-tags>
             <?php foreach ($payload['tags'] as $tag): $color = $tag['color'] ?? '#6366F1'; ?>
-              <span class="obsidian-tag" style="--tag-color: <?= sanitize($color); ?>"><?= sanitize($tag['label'] ?? ''); ?></span>
+              <span class="obsidian-tag" style="--tag-color: <?php echo  sanitize($color); ?>"><?php echo  sanitize($tag['label'] ?? ''); ?></span>
             <?php endforeach; ?>
           </div>
           <div class="obsidian-preview__shares">
@@ -811,7 +1017,7 @@ include __DIR__ . '/../includes/header.php';
             <div class="obsidian-preview__sharelist" data-preview-shares>
               <?php if (!empty($payload['shareLabels'])): ?>
                 <?php foreach ($payload['shareLabels'] as $label): ?>
-                  <span class="obsidian-pill"><?= sanitize($label); ?></span>
+                  <span class="obsidian-pill"><?php echo  sanitize($label); ?></span>
                 <?php endforeach; ?>
               <?php else: ?>
                 <span class="obsidian-pill is-muted">Private</span>
@@ -827,6 +1033,70 @@ include __DIR__ . '/../includes/header.php';
     </aside>
   </div>
 </section>
+
+<div class="obsidian-modal hidden" id="quickCaptureModal" data-modal>
+  <div class="obsidian-modal__overlay" data-modal-close></div>
+  <div class="obsidian-modal__dialog obsidian-modal__dialog--capture" role="dialog" aria-modal="true">
+    <header class="obsidian-modal__header">
+      <div>
+        <h3>Quick capture</h3>
+        <p class="obsidian-modal__subtitle">Draft a lightweight page without leaving the vault.</p>
+      </div>
+      <button type="button" class="obsidian-modal__close" data-modal-close>&times;</button>
+    </header>
+    <form method="post" class="obsidian-modal__form" data-quick-form autocomplete="off">
+      <input type="hidden" name="<?php echo  CSRF_TOKEN_NAME; ?>" value="<?php echo  sanitize($csrfToken); ?>">
+      <input type="hidden" name="quick_note" value="1">
+      <div class="obsidian-modal__body">
+        <label class="obsidian-field">
+          <span>Title</span>
+          <input type="text" name="title" required maxlength="180" placeholder="New note title">
+        </label>
+        <div class="obsidian-modal__grid">
+          <label class="obsidian-field">
+            <span>Status</span>
+            <select name="status">
+              <?php foreach ($statuses as $slug => $label): ?>
+                <option value="<?php echo  sanitize($slug); ?>"<?php echo  $slug === NOTES_DEFAULT_STATUS ? ' selected' : ''; ?>><?php echo  sanitize($label); ?></option>
+              <?php endforeach; ?>
+            </select>
+          </label>
+          <label class="obsidian-field">
+            <span>Date</span>
+            <input type="date" name="note_date" value="<?php echo  sanitize($today); ?>">
+          </label>
+        </div>
+        <div class="obsidian-modal__grid">
+          <label class="obsidian-field">
+            <span>Icon</span>
+            <input type="text" name="icon" maxlength="4" placeholder="📝">
+          </label>
+          <label class="obsidian-field">
+            <span>Cover URL</span>
+            <input type="url" name="cover_url" placeholder="https://example.com/cover.jpg">
+          </label>
+        </div>
+        <label class="obsidian-field">
+          <span>Summary</span>
+          <textarea name="body" rows="3" placeholder="Outline the idea..."></textarea>
+        </label>
+        <label class="obsidian-field">
+          <span>Tags</span>
+          <input type="text" name="quick_tags" placeholder="design, sprint, review">
+        </label>
+        <label class="obsidian-modal__toggle">
+          <input type="checkbox" name="quick_open" value="1" checked>
+          <span>Open in editor after capturing</span>
+        </label>
+        <p class="obsidian-modal__status" data-quick-status role="alert"></p>
+      </div>
+      <div class="obsidian-modal__footer">
+        <button type="button" class="btn obsidian-btn--ghost" data-modal-close>Cancel</button>
+        <button type="submit" class="btn obsidian-primary">Capture note</button>
+      </div>
+    </form>
+  </div>
+</div>
 
 <div class="obsidian-modal hidden" id="commandPalette" data-modal>
   <div class="obsidian-modal__overlay" data-modal-close></div>
@@ -850,14 +1120,14 @@ include __DIR__ . '/../includes/header.php';
       <button type="button" class="share-modal__close" data-modal-close>&times;</button>
     </header>
     <form method="post" class="share-modal__form" data-note-share-form>
-      <input type="hidden" name="<?= CSRF_TOKEN_NAME; ?>" value="<?= sanitize($csrfToken); ?>">
+      <input type="hidden" name="<?php echo  CSRF_TOKEN_NAME; ?>" value="<?php echo  sanitize($csrfToken); ?>">
       <input type="hidden" name="update_note_shares" value="1">
       <input type="hidden" name="note_id" value="">
       <div class="share-modal__body">
         <?php foreach ($shareOptions as $option): ?>
-          <label class="share-modal__option" data-share-option data-user-id="<?= (int)$option['id']; ?>" data-label="<?= sanitize($option['label']); ?>">
-            <input type="checkbox" name="shared_ids[]" value="<?= (int)$option['id']; ?>">
-            <span><?= sanitize($option['label']); ?></span>
+          <label class="share-modal__option" data-share-option data-user-id="<?php echo  (int)$option['id']; ?>" data-label="<?php echo  sanitize($option['label']); ?>">
+            <input type="checkbox" name="shared_ids[]" value="<?php echo  (int)$option['id']; ?>">
+            <span><?php echo  sanitize($option['label']); ?></span>
           </label>
         <?php endforeach; ?>
       </div>
@@ -880,14 +1150,14 @@ include __DIR__ . '/../includes/header.php';
       <button type="button" class="share-modal__close" data-modal-close>&times;</button>
     </header>
     <form method="post" class="share-modal__form" data-template-share-form>
-      <input type="hidden" name="<?= CSRF_TOKEN_NAME; ?>" value="<?= sanitize($csrfToken); ?>">
+      <input type="hidden" name="<?php echo  CSRF_TOKEN_NAME; ?>" value="<?php echo  sanitize($csrfToken); ?>">
       <input type="hidden" name="update_template_shares" value="1">
       <input type="hidden" name="template_id" value="">
       <div class="share-modal__body">
         <?php foreach ($shareOptions as $option): ?>
-          <label class="share-modal__option" data-template-share-option data-user-id="<?= (int)$option['id']; ?>" data-label="<?= sanitize($option['label']); ?>">
-            <input type="checkbox" name="shared_ids[]" value="<?= (int)$option['id']; ?>">
-            <span><?= sanitize($option['label']); ?></span>
+          <label class="share-modal__option" data-template-share-option data-user-id="<?php echo  (int)$option['id']; ?>" data-label="<?php echo  sanitize($option['label']); ?>">
+            <input type="checkbox" name="shared_ids[]" value="<?php echo  (int)$option['id']; ?>">
+            <span><?php echo  sanitize($option['label']); ?></span>
           </label>
         <?php endforeach; ?>
       </div>
@@ -900,19 +1170,21 @@ include __DIR__ . '/../includes/header.php';
 </div>
 
 <style>
-.obsidian-shell{position:relative;background:#fff;color:#0f172a;border-radius:20px;padding:1.4rem 1.6rem;margin-bottom:1.5rem;border:1px solid #e2e8f0;box-shadow:0 18px 40px rgba(15,23,42,.08);}
-.obsidian-header{display:flex;justify-content:space-between;align-items:center;gap:.9rem;margin-bottom:1.5rem;flex-wrap:wrap;}
-.obsidian-header__titles h1{margin:0;font-size:1.65rem;font-weight:700;color:#0f172a;}
+.obsidian-shell{position:relative;background:#fff;color:#0f172a;border-radius:18px;padding:1.2rem 1.4rem;margin-bottom:1.35rem;border:1px solid #e2e8f0;box-shadow:0 14px 32px rgba(15,23,42,.08);}
+.obsidian-header{display:flex;justify-content:space-between;align-items:center;gap:.9rem;margin-bottom:1.3rem;flex-wrap:wrap;}
+.obsidian-header__titles h1{margin:0;font-size:1.58rem;font-weight:700;color:#0f172a;}
 .obsidian-header__eyebrow{text-transform:uppercase;letter-spacing:.14em;font-size:.72rem;color:#64748b;display:block;margin-bottom:.2rem;}
-.obsidian-header__actions{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;}
-.obsidian-header__command{background:#edf2f7;border:1px solid #cbd5f5;color:#1e293b;border-radius:999px;padding:.5rem 1.05rem;font-size:.9rem;cursor:pointer;transition:.2s ease;}
+.obsidian-header__actions{display:flex;gap:.55rem;align-items:center;flex-wrap:wrap;}
+.obsidian-header__command{background:#edf2f7;border:1px solid #cbd5f5;color:#1e293b;border-radius:999px;padding:.45rem 1rem;font-size:.88rem;cursor:pointer;transition:.2s ease;}
 .obsidian-header__command:hover{background:#e2e8f0;}
-.obsidian-header__new{background:#2563eb;color:#fff;border-radius:999px;padding:.55rem 1.25rem;font-weight:600;box-shadow:0 12px 24px rgba(37,99,235,.2);text-decoration:none;}
-.obsidian-layout{display:grid;gap:1.25rem;grid-template-columns:280px minmax(0,1fr) 320px;align-items:start;}
-.obsidian-sidebar{background:#f8fafc;border:1px solid #e2e8f0;border-radius:16px;padding:1.1rem;display:grid;gap:1.1rem;}
-.obsidian-main{background:#f8fafc;border:1px solid #e2e8f0;border-radius:16px;padding:1.1rem;min-height:480px;display:grid;gap:1rem;}
-.obsidian-preview{background:#f8fafc;border:1px solid #e2e8f0;border-radius:16px;padding:1.1rem;min-height:480px;display:grid;}
-.obsidian-search{display:grid;gap:.85rem;background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:.9rem;}
+.obsidian-header__quick{background:#f8fafc;border:1px solid #cbd5f5;color:#2563eb;border-radius:999px;padding:.45rem .95rem;font-weight:500;font-size:.88rem;cursor:pointer;transition:.2s ease;}
+.obsidian-header__quick:hover{background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8;}
+.obsidian-header__new{background:#2563eb;color:#fff;border-radius:999px;padding:.5rem 1.2rem;font-weight:600;box-shadow:0 10px 22px rgba(37,99,235,.18);text-decoration:none;}
+.obsidian-layout{display:grid;gap:1.15rem;grid-template-columns:272px minmax(0,1fr) 312px;align-items:start;}
+.obsidian-sidebar{background:#f8fafc;border:1px solid #e2e8f0;border-radius:16px;padding:1rem;display:grid;gap:1rem;}
+.obsidian-main{background:#f8fafc;border:1px solid #e2e8f0;border-radius:16px;padding:1rem;min-height:480px;display:grid;gap:.95rem;}
+.obsidian-preview{background:#f8fafc;border:1px solid #e2e8f0;border-radius:16px;padding:1rem;min-height:480px;display:grid;}
+.obsidian-search{display:grid;gap:.8rem;background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:.85rem;}
 .obsidian-search__field{display:grid;gap:.35rem;font-size:.82rem;color:#475569;}
 .obsidian-search input{background:#fff;border:1px solid #cbd5f5;border-radius:.75rem;padding:.5rem .75rem;color:#0f172a;font-size:.93rem;}
 .obsidian-search__meta{display:flex;align-items:center;justify-content:space-between;gap:.6rem;flex-wrap:wrap;color:#64748b;font-size:.78rem;}
@@ -956,9 +1228,9 @@ include __DIR__ . '/../includes/header.php';
 .badge--amber{background:#fef3c7;color:#92400e;}
 .badge--teal{background:#ccfbf1;color:#0f766e;}
 .obsidian-note-list{display:grid;gap:.6rem;}
-.obsidian-note{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:.85rem;display:grid;gap:.6rem;cursor:pointer;transition:transform .15s ease,border-color .15s ease,box-shadow .15s ease;box-shadow:0 8px 18px rgba(15,23,42,.06);}
-.obsidian-note:hover{transform:translateY(-1px);border-color:#c7d2fe;box-shadow:0 12px 24px rgba(15,23,42,.08);}
-.obsidian-note.is-active{border-color:#2563eb;box-shadow:0 16px 32px rgba(37,99,235,.15);}
+.obsidian-note{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:.75rem .8rem;display:grid;gap:.55rem;cursor:pointer;transition:transform .15s ease,border-color .15s ease,box-shadow .15s ease;box-shadow:0 6px 16px rgba(15,23,42,.06);}
+.obsidian-note:hover{transform:translateY(-1px);border-color:#c7d2fe;box-shadow:0 10px 22px rgba(15,23,42,.08);}
+.obsidian-note.is-active{border-color:#2563eb;box-shadow:0 14px 28px rgba(37,99,235,.14);}
 .obsidian-note__header{display:flex;gap:.65rem;align-items:flex-start;justify-content:space-between;}
 .obsidian-note__icon{width:38px;height:38px;border-radius:10px;background:#e0e7ff;display:grid;place-items:center;font-size:1.1rem;color:#1d4ed8;}
 .obsidian-note__titles h3{margin:0;font-size:1.05rem;color:#0f172a;}
@@ -992,8 +1264,17 @@ include __DIR__ . '/../includes/header.php';
 .obsidian-modal{position:fixed;inset:0;z-index:50;display:grid;place-items:center;padding:1.5rem;background:rgba(15,23,42,.25);backdrop-filter:blur(6px);transition:opacity .2s ease;}
 .obsidian-modal.hidden{opacity:0;pointer-events:none;}
 .obsidian-modal__overlay{position:absolute;inset:0;}
-.obsidian-modal__dialog{position:relative;z-index:1;width:min(520px,100%);background:#fff;border:1px solid #e2e8f0;border-radius:16px;display:grid;gap:.65rem;padding:.9rem 1rem 1.1rem;box-shadow:0 22px 44px rgba(15,23,42,.12);}
+.obsidian-modal__dialog{position:relative;z-index:1;width:min(520px,100%);background:#fff;border:1px solid #e2e8f0;border-radius:16px;display:grid;gap:.65rem;padding:1rem 1.1rem 1.2rem;box-shadow:0 22px 44px rgba(15,23,42,.12);}
+.obsidian-modal__dialog--capture{width:min(560px,100%);}
 .obsidian-modal__dialog header input{width:100%;background:#fff;border:1px solid #cbd5f5;border-radius:.75rem;padding:.5rem .75rem;color:#0f172a;font-size:.95rem;}
+.obsidian-modal__body{display:grid;gap:.65rem;}
+.obsidian-modal__grid{display:grid;gap:.65rem;grid-template-columns:repeat(2,minmax(0,1fr));}
+.obsidian-modal__toggle{display:flex;align-items:center;gap:.5rem;font-size:.85rem;color:#475569;}
+.obsidian-modal__toggle input{width:1rem;height:1rem;}
+.obsidian-modal__status{margin:.2rem 0 0;color:#64748b;font-size:.8rem;min-height:1.2rem;}
+.obsidian-modal__status.is-error{color:#b91c1c;}
+.obsidian-modal__status.is-success{color:#047857;}
+.obsidian-modal__footer{display:flex;justify-content:flex-end;gap:.6rem;align-items:center;padding-top:.35rem;}
 .obsidian-modal__results{list-style:none;margin:0;padding:0;display:grid;gap:.3rem;max-height:300px;overflow:auto;}
 .obsidian-modal__results li{border-radius:10px;padding:.5rem .7rem;background:#f8fafc;border:1px solid #e2e8f0;color:#1f2937;cursor:pointer;transition:border-color .2s ease,background .2s ease;}
 .obsidian-modal__results li.is-active{border-color:#2563eb;background:#dbeafe;}
@@ -1009,7 +1290,14 @@ include __DIR__ . '/../includes/header.php';
   if (!shell) return;
 
   const noteState = new Map();
-  const noteElements = Array.from(shell.querySelectorAll('[data-note-item]'));
+  const noteList = shell.querySelector('[data-note-list]');
+  let noteElements = Array.from(shell.querySelectorAll('[data-note-item]'));
+  const summaryTotal = shell.querySelector('[data-summary-total] strong');
+  const summaryShared = shell.querySelector('[data-summary-shared] strong');
+  const summaryComments = shell.querySelector('[data-summary-comments] strong');
+  const summaryPhotos = shell.querySelector('[data-summary-photos] strong');
+  const summaryUpdated = shell.querySelector('[data-summary-updated] strong');
+
   noteElements.forEach((el) => {
     try {
       const raw = el.getAttribute('data-note') || '{}';
@@ -1021,6 +1309,49 @@ include __DIR__ . '/../includes/header.php';
       console.warn('Failed to parse note payload', err);
     }
   });
+
+  const noteClickHandler = (event) => {
+    event.preventDefault();
+    activateNote(event.currentTarget);
+  };
+
+  function safeParseCount(el) {
+    if (!el) return 0;
+    const raw = el.textContent || '';
+    const normalized = raw.replace(/[^0-9.-]/g, '');
+    const value = parseInt(normalized, 10);
+    return Number.isNaN(value) ? 0 : value;
+  }
+
+  function setCount(el, value) {
+    if (!el) return;
+    const safeValue = Number(value);
+    el.textContent = Number.isNaN(safeValue) ? '0' : safeValue.toLocaleString();
+  }
+
+  function updateSummaryAfterCreate(payload) {
+    if (summaryTotal) {
+      setCount(summaryTotal, safeParseCount(summaryTotal) + 1);
+    }
+    if (summaryShared && Array.isArray(payload.shareIds) && payload.shareIds.length) {
+      setCount(summaryShared, safeParseCount(summaryShared) + 1);
+    }
+    if (summaryComments && Number(payload.commentCount || 0) > 0) {
+      setCount(summaryComments, safeParseCount(summaryComments) + Number(payload.commentCount || 0));
+    }
+    if (summaryPhotos && Number(payload.photoCount || 0) > 0) {
+      setCount(summaryPhotos, safeParseCount(summaryPhotos) + Number(payload.photoCount || 0));
+    }
+    if (summaryUpdated) {
+      summaryUpdated.textContent = 'just now';
+    }
+  }
+
+  function todayIso() {
+    const now = new Date();
+    now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+    return now.toISOString().slice(0, 10);
+  }
 
   const preview = document.querySelector('[data-note-preview]');
   const previewRoot = preview ? preview.querySelector('[data-active-note-id]') : null;
@@ -1117,14 +1448,221 @@ include __DIR__ . '/../includes/header.php';
   }
 
   noteElements.forEach((el) => {
-    el.addEventListener('click', (event) => {
-      event.preventDefault();
-      activateNote(el);
-    });
+    el.addEventListener('click', noteClickHandler);
   });
 
   const initial = noteElements.find((el) => el.classList.contains('is-active'));
   if (initial) activateNote(initial);
+
+  function normalizeIcon(payload) {
+    if (payload && typeof payload.icon === 'string' && payload.icon.trim() !== '') {
+      return payload.icon.trim();
+    }
+    const title = String((payload && payload.title) || '').trim();
+    if (!title) return '📝';
+    const first = title.charAt(0);
+    return first ? first.toUpperCase() : '📝';
+  }
+
+  function createNoteCard(payload) {
+    if (!payload) return null;
+    const article = document.createElement('article');
+    article.className = 'obsidian-note';
+    article.dataset.noteId = String(payload.id || '');
+    article.dataset.note = JSON.stringify(payload);
+    article.setAttribute('data-note-item', '');
+
+    const header = document.createElement('header');
+    header.className = 'obsidian-note__header';
+
+    const icon = document.createElement('span');
+    icon.className = 'obsidian-note__icon';
+    icon.textContent = normalizeIcon(payload);
+    header.appendChild(icon);
+
+    const titles = document.createElement('div');
+    titles.className = 'obsidian-note__titles';
+    const heading = document.createElement('h3');
+    heading.textContent = payload.title || 'Untitled';
+    titles.appendChild(heading);
+
+    const meta = document.createElement('div');
+    meta.className = 'obsidian-note__meta';
+    const status = document.createElement('span');
+    status.className = 'badge ' + (payload.statusBadge || 'badge--indigo');
+    status.textContent = payload.statusLabel || '';
+    meta.appendChild(status);
+    if (payload.updatedRelative) {
+      const timestamp = document.createElement('span');
+      timestamp.className = 'obsidian-note__timestamp';
+      timestamp.textContent = payload.updatedRelative;
+      meta.appendChild(timestamp);
+    }
+    if (payload.isShared) {
+      const shared = document.createElement('span');
+      shared.className = 'obsidian-note__shared';
+      shared.textContent = 'Shared';
+      meta.appendChild(shared);
+    }
+    titles.appendChild(meta);
+    header.appendChild(titles);
+
+    const counts = document.createElement('div');
+    counts.className = 'obsidian-note__counts';
+    const sharePill = document.createElement('span');
+    sharePill.className = 'obsidian-note__pill';
+    sharePill.dataset.noteShareCount = String(payload.id || '');
+    sharePill.textContent = `👥 ${Number(payload.shareCount || 0)}`;
+    counts.appendChild(sharePill);
+    const commentPill = document.createElement('span');
+    commentPill.className = 'obsidian-note__pill';
+    commentPill.textContent = `💬 ${Number(payload.commentCount || 0)}`;
+    counts.appendChild(commentPill);
+    const photoPill = document.createElement('span');
+    photoPill.className = 'obsidian-note__pill';
+    photoPill.textContent = `📸 ${Number(payload.photoCount || 0)}`;
+    counts.appendChild(photoPill);
+    header.appendChild(counts);
+
+    article.appendChild(header);
+
+    if (payload.excerpt) {
+      const excerpt = document.createElement('p');
+      excerpt.className = 'obsidian-note__excerpt';
+      excerpt.textContent = payload.excerpt;
+      article.appendChild(excerpt);
+    }
+
+    if (Array.isArray(payload.tags) && payload.tags.length) {
+      const tagWrap = document.createElement('div');
+      tagWrap.className = 'obsidian-note__tags';
+      payload.tags.forEach((tag) => {
+        if (!tag) return;
+        const span = document.createElement('span');
+        span.className = 'obsidian-tag';
+        if (tag.color) {
+          span.style.setProperty('--tag-color', tag.color);
+        }
+        span.textContent = tag.label || '';
+        tagWrap.appendChild(span);
+      });
+      article.appendChild(tagWrap);
+    }
+
+    return article;
+  }
+
+  function insertNoteCard(payload) {
+    if (!payload || !noteList) return;
+    const card = createNoteCard(payload);
+    if (!card) return;
+    const emptyState = noteList.querySelector('.obsidian-empty');
+    if (emptyState) emptyState.remove();
+    noteList.prepend(card);
+    card.addEventListener('click', noteClickHandler);
+    noteElements.unshift(card);
+    noteState.set(String(payload.id || ''), payload);
+    activateNote(card);
+  }
+
+  const quickModal = document.getElementById('quickCaptureModal');
+  const quickForm = quickModal ? quickModal.querySelector('[data-quick-form]') : null;
+  const quickStatus = quickModal ? quickModal.querySelector('[data-quick-status]') : null;
+  const quickDateInput = quickForm ? quickForm.querySelector('input[name="note_date"]') : null;
+  const quickOpenToggle = quickForm ? quickForm.querySelector('input[name="quick_open"]') : null;
+  const quickTitleInput = quickForm ? quickForm.querySelector('input[name="title"]') : null;
+  const quickOpeners = document.querySelectorAll('[data-quick-open]');
+
+  function resetQuickForm(preserveStatus = false) {
+    if (!quickForm) return;
+    quickForm.reset();
+    if (quickDateInput) quickDateInput.value = todayIso();
+    if (quickOpenToggle) quickOpenToggle.checked = true;
+    if (!preserveStatus && quickStatus) {
+      quickStatus.textContent = '';
+      quickStatus.classList.remove('is-error');
+      quickStatus.classList.remove('is-success');
+    }
+  }
+
+  if (quickDateInput && !quickDateInput.value) {
+    quickDateInput.value = todayIso();
+  }
+
+  function openQuickCapture() {
+    if (!quickModal) return;
+    resetQuickForm();
+    openModal(quickModal);
+    setTimeout(() => {
+      if (quickTitleInput) quickTitleInput.focus();
+    }, 10);
+  }
+
+  quickOpeners.forEach((btn) => {
+    btn.addEventListener('click', (event) => {
+      event.preventDefault();
+      openQuickCapture();
+    });
+  });
+
+  document.addEventListener('keydown', (event) => {
+    const targetTag = (event.target && event.target.tagName ? event.target.tagName.toLowerCase() : '');
+    if (targetTag === 'input' || targetTag === 'textarea') return;
+    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'n') {
+      event.preventDefault();
+      openQuickCapture();
+    }
+  });
+
+  if (quickForm) {
+    quickForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const formData = new FormData(quickForm);
+      if (quickStatus) {
+        quickStatus.textContent = 'Capturing…';
+        quickStatus.classList.remove('is-error');
+        quickStatus.classList.remove('is-success');
+      }
+      fetch('index.php', {
+        method: 'POST',
+        body: formData,
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      }).then((res) => {
+        if (res.ok) return res.json();
+        return res.json().then((data) => {
+          const message = data && data.message ? data.message : 'Request failed';
+          throw new Error(message);
+        }).catch(() => {
+          throw new Error('Request failed');
+        });
+      }).then((data) => {
+        if (!data || !data.ok || !data.note) {
+          throw new Error((data && data.message) || 'Unable to capture note.');
+        }
+        const payload = data.note;
+        insertNoteCard(payload);
+        updateSummaryAfterCreate(payload);
+        if (quickStatus) {
+          quickStatus.textContent = 'Note captured';
+          quickStatus.classList.add('is-success');
+        }
+        const shouldOpen = formData.get('quick_open') === '1';
+        if (shouldOpen && payload.links && payload.links.edit) {
+          window.location.href = payload.links.edit;
+          return;
+        }
+        setTimeout(() => {
+          closeModal(quickModal);
+          resetQuickForm();
+        }, 220);
+      }).catch((error) => {
+        if (quickStatus) {
+          quickStatus.textContent = error && error.message ? error.message : 'Unable to capture note.';
+          quickStatus.classList.add('is-error');
+        }
+      });
+    });
+  }
 
   const commandModal = document.getElementById('commandPalette');
   const commandInput = commandModal ? commandModal.querySelector('[data-command-input]') : null;
@@ -1444,7 +1982,7 @@ include __DIR__ . '/../includes/header.php';
     }
   }
 
-  document.querySelectorAll('[data-modal-close]').forEach((btn) => {
+document.querySelectorAll('[data-modal-close]').forEach((btn) => {
     btn.addEventListener('click', (event) => {
       event.preventDefault();
       closeModal(btn.closest('[data-modal]'));

@@ -260,15 +260,15 @@ $shareConfigAttr = $canShare
       ], JSON_UNESCAPED_UNICODE), ENT_QUOTES, 'UTF-8')
     : '';
 ?>
-<section class="obsidian-shell obsidian-shell--composer" data-theme="obsidian" data-note-page data-note-id="<?= (int)$id; ?>" data-csrf="<?= sanitize($csrfToken); ?>" data-can-share="<?= $canShare ? '1' : '0'; ?>" data-share-config="<?= $shareConfigAttr; ?>">
+<section class="obsidian-shell obsidian-shell--composer" data-theme="obsidian" data-note-page data-note-id="<?php echo  (int)$id; ?>" data-csrf="<?php echo  sanitize($csrfToken); ?>" data-can-share="<?php echo  $canShare ? '1' : '0'; ?>" data-share-config="<?php echo  $shareConfigAttr; ?>">
   <header class="obsidian-header">
     <div class="obsidian-header__titles">
       <span class="obsidian-header__eyebrow">Edit note</span>
-      <h1><?= sanitize($note['title'] ?: 'Untitled'); ?></h1>
+      <h1><?php echo  sanitize($note['title'] ?: 'Untitled'); ?></h1>
       <p class="obsidian-header__subtitle">Keep content, properties, and collaborators aligned inside a dark vault workspace.</p>
     </div>
     <div class="obsidian-header__actions">
-      <a class="btn obsidian-btn--ghost" href="view.php?id=<?= (int)$note['id']; ?>">View note</a>
+      <a class="btn obsidian-btn--ghost" href="view.php?id=<?php echo  (int)$note['id']; ?>">View note</a>
       <?php if ($canShare): ?>
         <button class="btn obsidian-btn" type="button" data-share-open>Share</button>
       <?php endif; ?>
@@ -279,7 +279,7 @@ $shareConfigAttr = $canShare
   </header>
 
   <?php if ($errors): ?>
-    <div class="flash flash-error"><?= sanitize(implode(' ', $errors)); ?></div>
+    <div class="flash flash-error"><?php echo  sanitize(implode(' ', $errors)); ?></div>
   <?php endif; ?>
 
   <form method="post" class="obsidian-form" id="editNoteForm" novalidate>
@@ -291,13 +291,13 @@ $shareConfigAttr = $canShare
           </header>
           <label class="obsidian-field">
             <span>Date</span>
-            <input type="date" name="note_date" value="<?= sanitize($noteDateValue); ?>" required>
+            <input type="date" name="note_date" value="<?php echo  sanitize($noteDateValue); ?>" required>
           </label>
           <label class="obsidian-field">
             <span>Status</span>
             <select name="status">
               <?php foreach ($statuses as $slug => $label): ?>
-                <option value="<?= sanitize($slug); ?>"<?= notes_normalize_status($statusValue) === $slug ? ' selected' : ''; ?>><?= sanitize($label); ?></option>
+                <option value="<?php echo  sanitize($slug); ?>"<?php echo  notes_normalize_status($statusValue) === $slug ? ' selected' : ''; ?>><?php echo  sanitize($label); ?></option>
               <?php endforeach; ?>
             </select>
           </label>
@@ -312,7 +312,7 @@ $shareConfigAttr = $canShare
           <?php if ($tagOptions): ?>
           <div class="obsidian-tag-suggestions" aria-hidden="true">
             <?php foreach (array_slice($tagOptions, 0, 4) as $tag): ?>
-              <span class="obsidian-pill"><?= sanitize('#' . $tag['label']); ?></span>
+              <span class="obsidian-pill"><?php echo  sanitize('#' . $tag['label']); ?></span>
             <?php endforeach; ?>
           </div>
           <?php endif; ?>
@@ -324,21 +324,21 @@ $shareConfigAttr = $canShare
           </header>
           <label class="obsidian-field">
             <span>Project</span>
-            <input type="text" name="property_project" value="<?= sanitize($propertyProject); ?>" placeholder="Site or initiative">
+            <input type="text" name="property_project" value="<?php echo  sanitize($propertyProject); ?>" placeholder="Site or initiative">
           </label>
           <label class="obsidian-field">
             <span>Location</span>
-            <input type="text" name="property_location" value="<?= sanitize($propertyLocation); ?>" placeholder="Area, floor, building">
+            <input type="text" name="property_location" value="<?php echo  sanitize($propertyLocation); ?>" placeholder="Area, floor, building">
           </label>
           <label class="obsidian-field">
             <span>Due date</span>
-            <input type="date" name="property_due_date" value="<?= sanitize($propertyDueDate); ?>">
+            <input type="date" name="property_due_date" value="<?php echo  sanitize($propertyDueDate); ?>">
           </label>
           <label class="obsidian-field">
             <span>Priority</span>
             <select name="property_priority">
               <?php foreach ($priorityOptions as $option): ?>
-                <option value="<?= sanitize($option); ?>"<?= $propertyPriority === $option ? ' selected' : ''; ?>><?= sanitize($option); ?></option>
+                <option value="<?php echo  sanitize($option); ?>"<?php echo  $propertyPriority === $option ? ' selected' : ''; ?>><?php echo  sanitize($option); ?></option>
               <?php endforeach; ?>
             </select>
           </label>
@@ -354,24 +354,24 @@ $shareConfigAttr = $canShare
               <div class="obsidian-attachment-card">
                 <div class="obsidian-attachment-card__preview">
                   <?php if ($photo): ?>
-                    <img src="<?= sanitize($photo['url']); ?>" alt="Attachment <?= $i; ?>" loading="lazy">
+                    <img src="<?php echo  sanitize($photo['url']); ?>" alt="Attachment <?php echo  $i; ?>" loading="lazy">
                   <?php else: ?>
-                    <span class="obsidian-muted">Slot <?= $i; ?></span>
+                    <span class="obsidian-muted">Slot <?php echo  $i; ?></span>
                   <?php endif; ?>
                 </div>
                 <div class="obsidian-attachment-card__actions">
                   <?php if ($photo): ?>
-                    <a class="btn obsidian-btn" href="<?= sanitize($photo['url']); ?>" target="_blank" rel="noopener">Open</a>
+                    <a class="btn obsidian-btn" href="<?php echo  sanitize($photo['url']); ?>" target="_blank" rel="noopener">Open</a>
                     <?php if ($canEdit): ?>
                       <form method="post" onsubmit="return confirm('Remove this attachment?');">
-                        <input type="hidden" name="<?= CSRF_TOKEN_NAME; ?>" value="<?= sanitize($csrfToken); ?>">
-                        <button class="btn obsidian-btn--ghost" type="submit" name="delete_photo_id" value="<?= (int)$photo['id']; ?>">Remove</button>
+                        <input type="hidden" name="<?php echo  CSRF_TOKEN_NAME; ?>" value="<?php echo  sanitize($csrfToken); ?>">
+                        <button class="btn obsidian-btn--ghost" type="submit" name="delete_photo_id" value="<?php echo  (int)$photo['id']; ?>">Remove</button>
                       </form>
                     <?php endif; ?>
                   <?php elseif ($canEdit): ?>
                     <form method="post" enctype="multipart/form-data" class="obsidian-upload-form">
-                      <input type="hidden" name="<?= CSRF_TOKEN_NAME; ?>" value="<?= sanitize($csrfToken); ?>">
-                      <input type="hidden" name="upload_position" value="<?= $i; ?>">
+                      <input type="hidden" name="<?php echo  CSRF_TOKEN_NAME; ?>" value="<?php echo  sanitize($csrfToken); ?>">
+                      <input type="hidden" name="upload_position" value="<?php echo  $i; ?>">
                       <label class="btn obsidian-btn">
                         Choose
                         <input type="file" name="photo" accept="image/*,image/heic,image/heif" class="visually-hidden" required>
@@ -394,7 +394,7 @@ $shareConfigAttr = $canShare
           <div class="obsidian-detail__shares" data-share-summary data-empty-text="Private">
             <?php if ($shareDetails): ?>
               <?php foreach ($shareDetails as $share): ?>
-                <span class="obsidian-pill"><?= sanitize($share['label']); ?></span>
+                <span class="obsidian-pill"><?php echo  sanitize($share['label']); ?></span>
               <?php endforeach; ?>
             <?php else: ?>
               <span class="obsidian-muted" data-share-empty>Private</span>
@@ -413,7 +413,7 @@ $shareConfigAttr = $canShare
           </header>
           <label class="obsidian-field">
             <span>Template name</span>
-            <input type="text" name="template_name" maxlength="200" value="<?= sanitize($_POST['template_name'] ?? ($note['title'] ?? '')); ?>" required>
+            <input type="text" name="template_name" maxlength="200" value="<?php echo  sanitize($_POST['template_name'] ?? ($note['title'] ?? '')); ?>" required>
           </label>
           <div class="obsidian-form__actions">
             <button class="btn obsidian-btn" type="submit" name="save_template" value="1">Save as template</button>
@@ -440,24 +440,24 @@ $shareConfigAttr = $canShare
                 'ownerId'    => (int)($tpl['owner_id'] ?? $meId),
               ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), ENT_QUOTES, 'UTF-8');
             ?>
-            <article class="obsidian-template-card" data-template-id="<?= $tplId; ?>">
+            <article class="obsidian-template-card" data-template-id="<?php echo  $tplId; ?>">
               <div class="obsidian-template-card__body">
-                <span class="obsidian-template-card__icon"><?= sanitize($tplIcon); ?></span>
+                <span class="obsidian-template-card__icon"><?php echo  sanitize($tplIcon); ?></span>
                 <div>
-                  <strong><?= sanitize($tplName); ?></strong>
-                  <?php if (!empty($tpl['title'])): ?><em><?= sanitize($tpl['title']); ?></em><?php endif; ?>
+                  <strong><?php echo  sanitize($tplName); ?></strong>
+                  <?php if (!empty($tpl['title'])): ?><em><?php echo  sanitize($tpl['title']); ?></em><?php endif; ?>
                 </div>
               </div>
-              <div class="obsidian-template-card__shares" data-template-share-list="<?= $tplId; ?>">
+              <div class="obsidian-template-card__shares" data-template-share-list="<?php echo  $tplId; ?>">
                 <?php if (!empty($tpl['share_labels'])): ?>
                   <?php foreach ($tpl['share_labels'] as $label): ?>
-                    <span class="obsidian-pill"><?= sanitize($label); ?></span>
+                    <span class="obsidian-pill"><?php echo  sanitize($label); ?></span>
                   <?php endforeach; ?>
                 <?php else: ?>
                   <span class="obsidian-pill is-muted">Private</span>
                 <?php endif; ?>
               </div>
-              <button type="button" class="btn obsidian-btn--ghost" data-template-share-button="<?= $tplId; ?>" data-template-share="<?= $tplPayload; ?>">Share template</button>
+              <button type="button" class="btn obsidian-btn--ghost" data-template-share-button="<?php echo  $tplId; ?>" data-template-share="<?php echo  $tplPayload; ?>">Share template</button>
             </article>
             <?php endforeach; ?>
           </div>
@@ -470,36 +470,36 @@ $shareConfigAttr = $canShare
             <h2>Danger zone</h2>
           </header>
           <p class="obsidian-muted">Deleting removes the note, blocks, comments, and attachments.</p>
-          <input type="hidden" name="<?= CSRF_TOKEN_NAME; ?>" value="<?= sanitize($csrfToken); ?>">
+          <input type="hidden" name="<?php echo  CSRF_TOKEN_NAME; ?>" value="<?php echo  sanitize($csrfToken); ?>">
           <button class="btn obsidian-btn--ghost" type="submit" name="delete_note" value="1">Delete note</button>
         </form>
         <?php endif; ?>
       </aside>
 
       <div class="obsidian-main obsidian-main--composer">
-        <div class="obsidian-editor" data-note-composer data-config="<?= $configAttr; ?>">
+        <div class="obsidian-editor" data-note-composer data-config="<?php echo  $configAttr; ?>">
           <input type="hidden" name="blocks_payload" data-blocks-field>
           <input type="hidden" name="tags_payload" data-tags-field>
-          <textarea name="body" data-body-fallback class="visually-hidden"><?= sanitize($bodyFallback); ?></textarea>
+          <textarea name="body" data-body-fallback class="visually-hidden"><?php echo  sanitize($bodyFallback); ?></textarea>
 
           <div class="obsidian-editor__cover" data-cover-preview>
             <div class="obsidian-editor__cover-overlay">
               <label class="obsidian-field">
                 <span>Cover image URL</span>
-                <input type="url" name="cover_url" data-cover-input placeholder="https://…" value="<?= sanitize($coverValue); ?>">
+                <input type="url" name="cover_url" data-cover-input placeholder="https://…" value="<?php echo  sanitize($coverValue); ?>">
               </label>
               <button type="button" class="btn obsidian-btn--ghost small" data-cover-clear>Remove cover</button>
             </div>
           </div>
 
           <div class="obsidian-editor__head">
-            <span class="obsidian-editor__icon" data-icon-preview><?= sanitize($iconValue ?: '📝'); ?></span>
+            <span class="obsidian-editor__icon" data-icon-preview><?php echo  sanitize($iconValue ?: '📝'); ?></span>
             <div class="obsidian-editor__titlegroup">
               <label class="obsidian-field obsidian-field--icon">
                 <span>Icon</span>
-                <input type="text" name="icon" maxlength="4" data-icon-input placeholder="💡" value="<?= sanitize($iconValue); ?>">
+                <input type="text" name="icon" maxlength="4" data-icon-input placeholder="💡" value="<?php echo  sanitize($iconValue); ?>">
               </label>
-              <input class="obsidian-editor__title" type="text" name="title" value="<?= sanitize($formTitle); ?>" placeholder="Untitled" required>
+              <input class="obsidian-editor__title" type="text" name="title" value="<?php echo  sanitize($formTitle); ?>" placeholder="Untitled" required>
             </div>
           </div>
 
@@ -523,9 +523,9 @@ $shareConfigAttr = $canShare
         </div>
 
         <div class="obsidian-form__actions">
-          <input type="hidden" name="<?= CSRF_TOKEN_NAME; ?>" value="<?= sanitize($csrfToken); ?>">
+          <input type="hidden" name="<?php echo  CSRF_TOKEN_NAME; ?>" value="<?php echo  sanitize($csrfToken); ?>">
           <button class="btn obsidian-primary" type="submit" name="save_note" value="1">Save changes</button>
-          <a class="btn obsidian-btn--ghost" href="view.php?id=<?= (int)$note['id']; ?>">Cancel</a>
+          <a class="btn obsidian-btn--ghost" href="view.php?id=<?php echo  (int)$note['id']; ?>">Cancel</a>
         </div>
       </div>
     </div>
@@ -544,7 +544,7 @@ $shareConfigAttr = $canShare
       <button type="button" class="obsidian-modal__close" data-modal-close>&times;</button>
     </header>
     <form method="post" id="noteShareForm" class="obsidian-modal__form">
-      <input type="hidden" name="<?= CSRF_TOKEN_NAME; ?>" value="<?= sanitize($csrfToken); ?>">
+      <input type="hidden" name="<?php echo  CSRF_TOKEN_NAME; ?>" value="<?php echo  sanitize($csrfToken); ?>">
       <input type="hidden" name="update_shares" value="1">
       <div class="obsidian-modal__body">
         <label class="obsidian-modal__search">
@@ -559,9 +559,9 @@ $shareConfigAttr = $canShare
               $checked = in_array($uid, $currentShares, true);
               $isOwner = !empty($option['is_owner']);
             ?>
-            <label class="obsidian-modal__option" data-share-option data-label="<?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8'); ?>">
-              <input type="checkbox" name="shared_ids[]" value="<?= $uid; ?>" <?= $checked ? 'checked' : ''; ?> <?= $isOwner ? 'disabled' : ''; ?>>
-              <span><?= sanitize($label); ?></span>
+            <label class="obsidian-modal__option" data-share-option data-label="<?php echo  htmlspecialchars($label, ENT_QUOTES, 'UTF-8'); ?>">
+              <input type="checkbox" name="shared_ids[]" value="<?php echo  $uid; ?>" <?php echo  $checked ? 'checked' : ''; ?> <?php echo  $isOwner ? 'disabled' : ''; ?>>
+              <span><?php echo  sanitize($label); ?></span>
               <?php if ($isOwner): ?><span class="obsidian-modal__badge">Owner</span><?php endif; ?>
             </label>
             <?php endforeach; ?>
@@ -592,15 +592,15 @@ $shareConfigAttr = $canShare
       <button type="button" class="obsidian-modal__close" data-modal-close>&times;</button>
     </header>
     <form method="post" class="obsidian-modal__form" data-template-share-form>
-      <input type="hidden" name="<?= CSRF_TOKEN_NAME; ?>" value="<?= sanitize($csrfToken); ?>">
+      <input type="hidden" name="<?php echo  CSRF_TOKEN_NAME; ?>" value="<?php echo  sanitize($csrfToken); ?>">
       <input type="hidden" name="update_template_shares" value="1">
       <input type="hidden" name="template_id" value="">
       <div class="obsidian-modal__body">
         <?php foreach ($shareOptions as $option): ?>
           <?php $uid = (int)($option['id'] ?? 0); $label = trim((string)($option['email'] ?? ($option['label'] ?? 'User #' . $uid))); ?>
-          <label class="obsidian-modal__option" data-template-share-option data-user-id="<?= $uid; ?>" data-label="<?= sanitize($label); ?>">
-            <input type="checkbox" name="shared_ids[]" value="<?= $uid; ?>">
-            <span><?= sanitize($label); ?></span>
+          <label class="obsidian-modal__option" data-template-share-option data-user-id="<?php echo  $uid; ?>" data-label="<?php echo  sanitize($label); ?>">
+            <input type="checkbox" name="shared_ids[]" value="<?php echo  $uid; ?>">
+            <span><?php echo  sanitize($label); ?></span>
           </label>
         <?php endforeach; ?>
       </div>
@@ -825,7 +825,7 @@ document.addEventListener('DOMContentLoaded', () => {
       templateShareForm.addEventListener('submit', (event) => {
         event.preventDefault();
         const formData = new FormData(templateShareForm);
-        fetch('edit.php?id=<?= (int)$id; ?>', {
+        fetch('edit.php?id=<?php echo  (int)$id; ?>', {
           method: 'POST',
           body: formData,
           headers: { 'X-Requested-With': 'XMLHttpRequest' },
@@ -879,7 +879,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const shareEmptyText = shareSummary ? (shareSummary.getAttribute('data-empty-text') || 'Private') : 'Private';
   const shareTrigger = document.querySelector('[data-share-open]');
   const noteId = document.querySelector('[data-note-page]')?.getAttribute('data-note-id') || '';
-  const csrfField = '<?= CSRF_TOKEN_NAME; ?>';
+  const csrfField = '<?php echo  CSRF_TOKEN_NAME; ?>';
   const csrfToken = document.querySelector('[data-note-page]')?.getAttribute('data-csrf') || '';
 
   function renderShareBadges(target, shares) {

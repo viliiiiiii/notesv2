@@ -247,30 +247,30 @@ $shareConfigAttr = $shareConfig
     : '';
 include __DIR__ . '/../includes/header.php';
 ?>
-<section class="obsidian-shell obsidian-shell--viewer" data-theme="obsidian" data-note-page data-note-id="<?= (int)$id; ?>" data-csrf="<?= sanitize($csrfToken); ?>" data-can-share="<?= $canShare ? '1' : '0'; ?>" data-share-config="<?= $shareConfigAttr; ?>">
+<section class="obsidian-shell obsidian-shell--viewer" data-theme="obsidian" data-note-page data-note-id="<?php echo  (int)$id; ?>" data-csrf="<?php echo  sanitize($csrfToken); ?>" data-can-share="<?php echo  $canShare ? '1' : '0'; ?>" data-share-config="<?php echo  $shareConfigAttr; ?>">
   <header class="obsidian-header obsidian-header--viewer">
     <div class="obsidian-header__titles">
       <span class="obsidian-header__eyebrow">Note detail</span>
       <div class="obsidian-detail">
-        <span class="obsidian-detail__icon"><?= sanitize($meta['icon'] ?: '🗒️'); ?></span>
+        <span class="obsidian-detail__icon"><?php echo  sanitize($meta['icon'] ?: '🗒️'); ?></span>
         <div class="obsidian-detail__content">
-          <h1><?= sanitize($note['title'] ?: 'Untitled'); ?></h1>
+          <h1><?php echo  sanitize($note['title'] ?: 'Untitled'); ?></h1>
           <div class="obsidian-detail__meta">
-            <span class="obsidian-status obsidian-status--<?= sanitize($statusSlug); ?>"><?= sanitize($statusLabel); ?></span>
+            <span class="obsidian-status obsidian-status--<?php echo  sanitize($statusSlug); ?>"><?php echo  sanitize($statusLabel); ?></span>
             <?php if ($noteDateFormatted): ?>
-              <span class="obsidian-detail__timestamp"><?= sanitize($noteDateFormatted); ?></span>
+              <span class="obsidian-detail__timestamp"><?php echo  sanitize($noteDateFormatted); ?></span>
             <?php endif; ?>
             <?php if ($commentCount): ?>
-              <span class="obsidian-detail__count">💬 <?= (int)$commentCount; ?></span>
+              <span class="obsidian-detail__count">💬 <?php echo  (int)$commentCount; ?></span>
             <?php endif; ?>
             <?php if (array_filter($photos)): ?>
-              <span class="obsidian-detail__count">📸 <?= count(array_filter($photos)); ?></span>
+              <span class="obsidian-detail__count">📸 <?php echo  count(array_filter($photos)); ?></span>
             <?php endif; ?>
           </div>
           <div class="obsidian-detail__shares" data-share-list>
             <?php if ($shareDetails): ?>
               <?php foreach ($shareDetails as $share): ?>
-                <span class="obsidian-pill"><?= sanitize($share['label']); ?></span>
+                <span class="obsidian-pill"><?php echo  sanitize($share['label']); ?></span>
               <?php endforeach; ?>
             <?php else: ?>
               <span class="obsidian-pill is-muted" data-share-empty>Private</span>
@@ -279,7 +279,7 @@ include __DIR__ . '/../includes/header.php';
           <?php if ($tags): ?>
           <div class="obsidian-detail__tags">
             <?php foreach ($tags as $tag): ?>
-              <span class="obsidian-tag" style="--tag-color: <?= sanitize($tag['color'] ?? notes_random_tag_color()); ?>"><?= sanitize($tag['label']); ?></span>
+              <span class="obsidian-tag" style="--tag-color: <?php echo  sanitize($tag['color'] ?? notes_random_tag_color()); ?>"><?php echo  sanitize($tag['label']); ?></span>
             <?php endforeach; ?>
           </div>
           <?php endif; ?>
@@ -292,13 +292,13 @@ include __DIR__ . '/../includes/header.php';
         <button class="btn obsidian-btn" type="button" data-share-open>Share</button>
       <?php endif; ?>
       <?php if ($canEdit): ?>
-        <a class="btn obsidian-primary" href="edit.php?id=<?= (int)$note['id']; ?>">Edit note</a>
+        <a class="btn obsidian-primary" href="edit.php?id=<?php echo  (int)$note['id']; ?>">Edit note</a>
       <?php endif; ?>
     </div>
   </header>
 
   <?php if ($errors): ?>
-    <div class="flash flash-error"><?= sanitize(implode(' ', $errors)); ?></div>
+    <div class="flash flash-error"><?php echo  sanitize(implode(' ', $errors)); ?></div>
   <?php endif; ?>
 
   <div class="obsidian-layout obsidian-layout--viewer">
@@ -315,51 +315,51 @@ include __DIR__ . '/../includes/header.php';
               $calloutColor = $block['color'] ?? null;
               $calloutIcon  = $block['icon'] ?? null;
             ?>
-            <div class="obsidian-block obsidian-block--<?= sanitize($type); ?>">
+            <div class="obsidian-block obsidian-block--<?php echo  sanitize($type); ?>">
               <?php switch ($type) {
                 case 'heading1': ?>
-                  <h2 class="obsidian-block__heading obsidian-block__heading--h1"><?= nl2br(sanitize($text)); ?></h2>
+                  <h2 class="obsidian-block__heading obsidian-block__heading--h1"><?php echo  nl2br(sanitize($text)); ?></h2>
                 <?php break;
                 case 'heading2': ?>
-                  <h3 class="obsidian-block__heading obsidian-block__heading--h2"><?= nl2br(sanitize($text)); ?></h3>
+                  <h3 class="obsidian-block__heading obsidian-block__heading--h2"><?php echo  nl2br(sanitize($text)); ?></h3>
                 <?php break;
                 case 'heading3': ?>
-                  <h4 class="obsidian-block__heading obsidian-block__heading--h3"><?= nl2br(sanitize($text)); ?></h4>
+                  <h4 class="obsidian-block__heading obsidian-block__heading--h3"><?php echo  nl2br(sanitize($text)); ?></h4>
                 <?php break;
                 case 'todo': ?>
                   <label class="obsidian-block__todo">
-                    <input type="checkbox" value="1" data-block-toggle="<?= sanitize($uid); ?>" <?= $checked ? 'checked' : ''; ?><?= $canEdit ? '' : ' disabled'; ?>>
-                    <span><?= nl2br(sanitize($text)); ?></span>
+                    <input type="checkbox" value="1" data-block-toggle="<?php echo  sanitize($uid); ?>" <?php echo  $checked ? 'checked' : ''; ?><?php echo  $canEdit ? '' : ' disabled'; ?>>
+                    <span><?php echo  nl2br(sanitize($text)); ?></span>
                   </label>
                 <?php break;
                 case 'bulleted': ?>
                   <ul class="obsidian-block__list obsidian-block__list--bulleted">
                     <?php foreach ($items as $item): ?>
-                      <li><?= nl2br(sanitize((string)$item)); ?></li>
+                      <li><?php echo  nl2br(sanitize((string)$item)); ?></li>
                     <?php endforeach; ?>
                   </ul>
                 <?php break;
                 case 'numbered': ?>
                   <ol class="obsidian-block__list obsidian-block__list--numbered">
                     <?php foreach ($items as $item): ?>
-                      <li><?= nl2br(sanitize((string)$item)); ?></li>
+                      <li><?php echo  nl2br(sanitize((string)$item)); ?></li>
                     <?php endforeach; ?>
                   </ol>
                 <?php break;
                 case 'quote': ?>
-                  <blockquote class="obsidian-block__quote"><?= nl2br(sanitize($text)); ?></blockquote>
+                  <blockquote class="obsidian-block__quote"><?php echo  nl2br(sanitize($text)); ?></blockquote>
                 <?php break;
                 case 'callout': ?>
-                  <div class="obsidian-block__callout"<?= $calloutColor ? ' style="--callout-accent:' . sanitize($calloutColor) . ';"' : ''; ?>>
-                    <div class="obsidian-block__callout-icon" aria-hidden="true"><?= $calloutIcon ? sanitize($calloutIcon) : '💡'; ?></div>
-                    <div><?= nl2br(sanitize($text)); ?></div>
+                  <div class="obsidian-block__callout"<?php echo  $calloutColor ? ' style="--callout-accent:' . sanitize($calloutColor) . ';"' : ''; ?>>
+                    <div class="obsidian-block__callout-icon" aria-hidden="true"><?php echo  $calloutIcon ? sanitize($calloutIcon) : '💡'; ?></div>
+                    <div><?php echo  nl2br(sanitize($text)); ?></div>
                   </div>
                 <?php break;
                 case 'divider': ?>
                   <div class="obsidian-block__divider" role="presentation"></div>
                 <?php break;
                 default: ?>
-                  <p class="obsidian-block__text"><?= nl2br(sanitize($text)); ?></p>
+                  <p class="obsidian-block__text"><?php echo  nl2br(sanitize($text)); ?></p>
                 <?php break;
               } ?>
             </div>
@@ -377,7 +377,7 @@ include __DIR__ . '/../includes/header.php';
             <h2>Discussion</h2>
             <p class="obsidian-panel__hint">Collaborate with teammates and keep context alongside the note.</p>
           </div>
-          <span class="obsidian-pill is-muted"><?= (int)$commentCount; ?> replies</span>
+          <span class="obsidian-pill is-muted"><?php echo  (int)$commentCount; ?> replies</span>
         </header>
         <div class="obsidian-comments">
           <?php if (!$commentThreads): ?>
@@ -386,26 +386,26 @@ include __DIR__ . '/../includes/header.php';
             <?php
             $renderComment = static function (array $comment, callable $renderComment) use ($csrfToken, $note) {
                 ?>
-                <article class="obsidian-comment" id="comment-<?= (int)$comment['id']; ?>">
+                <article class="obsidian-comment" id="comment-<?php echo  (int)$comment['id']; ?>">
                   <header class="obsidian-comment__header">
                     <div>
-                      <strong><?= sanitize($comment['author_label']); ?></strong>
-                      <span class="obsidian-comment__timestamp"><?= sanitize(substr((string)($comment['created_at'] ?? ''), 0, 16)); ?></span>
+                      <strong><?php echo  sanitize($comment['author_label']); ?></strong>
+                      <span class="obsidian-comment__timestamp"><?php echo  sanitize(substr((string)($comment['created_at'] ?? ''), 0, 16)); ?></span>
                     </div>
                     <?php if (!empty($comment['can_delete'])): ?>
                       <form method="post" class="obsidian-comment__delete" onsubmit="return confirm('Delete this reply?');">
-                        <input type="hidden" name="<?= CSRF_TOKEN_NAME; ?>" value="<?= sanitize($csrfToken); ?>">
-                        <button class="btn obsidian-btn--ghost small" type="submit" name="delete_comment" value="<?= (int)$comment['id']; ?>">Delete</button>
+                        <input type="hidden" name="<?php echo  CSRF_TOKEN_NAME; ?>" value="<?php echo  sanitize($csrfToken); ?>">
+                        <button class="btn obsidian-btn--ghost small" type="submit" name="delete_comment" value="<?php echo  (int)$comment['id']; ?>">Delete</button>
                       </form>
                     <?php endif; ?>
                   </header>
-                  <div class="obsidian-comment__body"><?= nl2br(sanitize($comment['body'] ?? '')); ?></div>
+                  <div class="obsidian-comment__body"><?php echo  nl2br(sanitize($comment['body'] ?? '')); ?></div>
                   <footer class="obsidian-comment__footer">
                     <button class="btn obsidian-btn--ghost small" type="button" data-reply-toggle>Reply</button>
                     <form method="post" class="obsidian-comment-form obsidian-comment-form--inline" data-reply-form hidden>
                       <textarea name="body" rows="3" required></textarea>
-                      <input type="hidden" name="parent_id" value="<?= (int)$comment['id']; ?>">
-                      <input type="hidden" name="<?= CSRF_TOKEN_NAME; ?>" value="<?= sanitize($csrfToken); ?>">
+                      <input type="hidden" name="parent_id" value="<?php echo  (int)$comment['id']; ?>">
+                      <input type="hidden" name="<?php echo  CSRF_TOKEN_NAME; ?>" value="<?php echo  sanitize($csrfToken); ?>">
                       <div class="obsidian-comment-actions">
                         <button class="btn obsidian-primary small" type="submit" name="add_comment" value="1">Post reply</button>
                         <button class="btn obsidian-btn--ghost small" type="button" data-reply-cancel>Cancel</button>
@@ -444,9 +444,9 @@ include __DIR__ . '/../includes/header.php';
         <form method="post" class="obsidian-comment-form obsidian-comment-form--new">
           <label>
             <span class="obsidian-field-label">Add a reply</span>
-            <textarea name="body" rows="4" required><?= sanitize($_POST['body'] ?? ''); ?></textarea>
+            <textarea name="body" rows="4" required><?php echo  sanitize($_POST['body'] ?? ''); ?></textarea>
           </label>
-          <input type="hidden" name="<?= CSRF_TOKEN_NAME; ?>" value="<?= sanitize($csrfToken); ?>">
+          <input type="hidden" name="<?php echo  CSRF_TOKEN_NAME; ?>" value="<?php echo  sanitize($csrfToken); ?>">
           <div class="obsidian-comment-actions">
             <button class="btn obsidian-primary" type="submit" name="add_comment" value="1">Post comment</button>
           </div>
@@ -490,8 +490,8 @@ include __DIR__ . '/../includes/header.php';
             }
           ?>
           <div class="obsidian-properties__item">
-            <dt><?= sanitize($label); ?></dt>
-            <dd><?= $value; ?></dd>
+            <dt><?php echo  sanitize($label); ?></dt>
+            <dd><?php echo  $value; ?></dd>
           </div>
           <?php endforeach; ?>
         </dl>
@@ -504,94 +504,14 @@ include __DIR__ . '/../includes/header.php';
         <div class="obsidian-detail-grid">
           <div>
             <span class="obsidian-field-label">Owner</span>
-            <span><?= sanitize($ownerLabel); ?></span>
+            <span><?php echo  sanitize($ownerLabel); ?></span>
           </div>
           <div>
             <span class="obsidian-field-label">Shared with</span>
             <div class="obsidian-detail__shares" data-share-summary data-empty-text="Private">
               <?php if ($shareDetails): ?>
                 <?php foreach ($shareDetails as $share): ?>
-                  <span class="obsidian-pill"><?= sanitize($share['label']); ?></span>
-                <?php endforeach; ?>
-              <?php else: ?>
-                <span class="obsidian-muted" data-share-empty>Private</span>
-              <?php endif; ?>
-            </div>
-          </div>
-        </div>
-      </section>
-
-        <form method="post" class="obsidian-comment-form obsidian-comment-form--new">
-          <label>
-            <span class="obsidian-field-label">Add a reply</span>
-            <textarea name="body" rows="4" required><?= sanitize($_POST['body'] ?? ''); ?></textarea>
-          </label>
-          <input type="hidden" name="<?= CSRF_TOKEN_NAME; ?>" value="<?= sanitize($csrfToken); ?>">
-          <div class="obsidian-comment-actions">
-            <button class="btn obsidian-primary" type="submit" name="add_comment" value="1">Post comment</button>
-          </div>
-        </form>
-      </section>
-      <?php else: ?>
-        <section class="obsidian-panel obsidian-panel--comments" id="comments">
-          <header class="obsidian-panel__header">
-            <h2>Discussion</h2>
-          </header>
-          <p class="obsidian-empty">Commenting is disabled for this installation.</p>
-        </section>
-      <?php endif; ?>
-    </div>
-
-    <aside class="obsidian-sidebar obsidian-sidebar--viewer">
-      <section class="obsidian-panel obsidian-panel--properties">
-        <header class="obsidian-panel__header">
-          <h2>Properties</h2>
-        </header>
-        <dl class="obsidian-properties">
-          <?php foreach ($propertyLabels as $key => $label):
-            $value = $properties[$key] ?? '';
-            if ($key === 'due_date' && $value) {
-                try {
-                    $dt = new DateTimeImmutable($value);
-                    $formatted = $dt->format('M j, Y');
-                    if ($dt < new DateTimeImmutable('today')) {
-                        $value = '<span class="obsidian-overdue">' . sanitize($formatted) . '</span>';
-                    } else {
-                        $value = sanitize($formatted);
-                    }
-                } catch (Throwable $e) {
-                    $value = sanitize($value);
-                }
-            } elseif ($key === 'priority' && $value !== '') {
-                $badge = notes_priority_badge_class($value);
-                $value = '<span class="badge ' . sanitize($badge) . '">' . sanitize($value) . '</span>';
-            } else {
-                $value = $value !== '' ? sanitize((string)$value) : '<span class="obsidian-muted">—</span>';
-            }
-          ?>
-          <div class="obsidian-properties__item">
-            <dt><?= sanitize($label); ?></dt>
-            <dd><?= $value; ?></dd>
-          </div>
-          <?php endforeach; ?>
-        </dl>
-      </section>
-
-      <section class="obsidian-panel obsidian-panel--details">
-        <header class="obsidian-panel__header">
-          <h2>Details</h2>
-        </header>
-        <div class="obsidian-detail-grid">
-          <div>
-            <span class="obsidian-field-label">Owner</span>
-            <span><?= sanitize($ownerLabel); ?></span>
-          </div>
-          <div>
-            <span class="obsidian-field-label">Shared with</span>
-            <div class="obsidian-detail__shares" data-share-summary data-empty-text="Private">
-              <?php if ($shareDetails): ?>
-                <?php foreach ($shareDetails as $share): ?>
-                  <span class="obsidian-pill"><?= sanitize($share['label']); ?></span>
+                  <span class="obsidian-pill"><?php echo  sanitize($share['label']); ?></span>
                 <?php endforeach; ?>
               <?php else: ?>
                 <span class="obsidian-muted" data-share-empty>Private</span>
@@ -611,11 +531,11 @@ include __DIR__ . '/../includes/header.php';
         <div class="obsidian-attachments" id="noteViewPhotoGrid">
           <?php for ($i = 1; $i <= 3; $i++): $p = $photos[$i] ?? null; ?>
             <?php if ($p): ?>
-              <a href="<?= sanitize($p['url']); ?>" class="obsidian-attachment" target="_blank" rel="noopener">
-                <img src="<?= sanitize($p['url']); ?>" alt="Note photo <?= $i; ?>" loading="lazy" decoding="async">
+              <a href="<?php echo  sanitize($p['url']); ?>" class="obsidian-attachment" target="_blank" rel="noopener">
+                <img src="<?php echo  sanitize($p['url']); ?>" alt="Note photo <?php echo  $i; ?>" loading="lazy" decoding="async">
               </a>
             <?php else: ?>
-              <div class="obsidian-attachment obsidian-attachment--empty">Slot <?= $i; ?></div>
+              <div class="obsidian-attachment obsidian-attachment--empty">Slot <?php echo  $i; ?></div>
             <?php endif; ?>
           <?php endfor; ?>
         </div>
@@ -647,7 +567,7 @@ include __DIR__ . '/../includes/header.php';
       <button type="button" class="obsidian-modal__close" data-modal-close>&times;</button>
     </header>
     <form method="post" id="noteShareForm" class="obsidian-modal__form">
-      <input type="hidden" name="<?= CSRF_TOKEN_NAME; ?>" value="<?= sanitize($csrfToken); ?>">
+      <input type="hidden" name="<?php echo  CSRF_TOKEN_NAME; ?>" value="<?php echo  sanitize($csrfToken); ?>">
       <input type="hidden" name="update_shares" value="1">
       <div class="obsidian-modal__body">
         <label class="obsidian-modal__search">
@@ -662,9 +582,9 @@ include __DIR__ . '/../includes/header.php';
               $checked = in_array($uid, $currentShareIds, true);
               $isOwner = !empty($option['is_owner']);
             ?>
-            <label class="obsidian-modal__option" data-share-option data-label="<?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8'); ?>">
-              <input type="checkbox" name="shared_ids[]" value="<?= $uid; ?>" <?= $checked ? 'checked' : ''; ?> <?= $isOwner ? 'disabled' : ''; ?>>
-              <span><?= sanitize($label); ?></span>
+            <label class="obsidian-modal__option" data-share-option data-label="<?php echo  htmlspecialchars($label, ENT_QUOTES, 'UTF-8'); ?>">
+              <input type="checkbox" name="shared_ids[]" value="<?php echo  $uid; ?>" <?php echo  $checked ? 'checked' : ''; ?> <?php echo  $isOwner ? 'disabled' : ''; ?>>
+              <span><?php echo  sanitize($label); ?></span>
               <?php if ($isOwner): ?><span class="obsidian-modal__badge">Owner</span><?php endif; ?>
             </label>
             <?php endforeach; ?>
@@ -823,7 +743,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const shareTrigger = document.querySelector('[data-share-open]');
   const shareSummary = document.querySelector('[data-share-summary]');
   const shareBadges = document.querySelector('[data-share-list]');
-  const csrfField = '<?= CSRF_TOKEN_NAME; ?>';
+  const csrfField = '<?php echo  CSRF_TOKEN_NAME; ?>';
   const noteId = page ? (page.getAttribute('data-note-id') || '') : '';
   const csrfToken = page ? (page.getAttribute('data-csrf') || '') : '';
   const canShare = page && page.getAttribute('data-can-share') === '1';
