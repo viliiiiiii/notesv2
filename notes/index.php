@@ -295,6 +295,7 @@ try {
     error_log('Notes index query failed: ' . $e->getMessage());
     $rows = [];
 }
+unset($row);
 
 $noteIds = array_map(static fn(array $row) => (int)($row['id'] ?? 0), $rows);
 $noteIds = array_values(array_filter($noteIds));

@@ -426,7 +426,100 @@ include __DIR__ . '/../includes/header.php';
             }
             ?>
           <?php endif; ?>
+        </header>
+        <div class="note-panel__body">
+          <div class="note-photos" id="noteViewPhotoGrid">
+            <?php for ($i = 1; $i <= 3; $i++): $p = $photos[$i] ?? null; ?>
+              <?php if ($p): ?>
+                <a href="<?= sanitize($p['url']); ?>" class="note-photo-thumb js-zoom" target="_blank" rel="noopener">
+                  <img src="<?= sanitize($p['url']); ?>" alt="Note photo <?= $i; ?>" loading="lazy" decoding="async">
+                </a>
+              <?php else: ?>
+                <div class="note-photo-empty muted">Slot <?= $i; ?></div>
+              <?php endif; ?>
+            <?php endfor; ?>
+          </div>
         </div>
+
+        <form method="post" class="obsidian-comment-form obsidian-comment-form--new">
+          <label>
+            <span class="obsidian-field-label">Add a reply</span>
+            <textarea name="body" rows="4" required><?= sanitize($_POST['body'] ?? ''); ?></textarea>
+          </label>
+          <input type="hidden" name="<?= CSRF_TOKEN_NAME; ?>" value="<?= sanitize($csrfToken); ?>">
+          <div class="obsidian-comment-actions">
+            <button class="btn obsidian-primary" type="submit" name="add_comment" value="1">Post comment</button>
+          </div>
+        </form>
+      </section>
+      <?php else: ?>
+        <section class="obsidian-panel obsidian-panel--comments" id="comments">
+          <header class="obsidian-panel__header">
+            <h2>Discussion</h2>
+          </header>
+          <p class="obsidian-empty">Commenting is disabled for this installation.</p>
+        </section>
+      <?php endif; ?>
+    </div>
+
+    <aside class="obsidian-sidebar obsidian-sidebar--viewer">
+      <section class="obsidian-panel obsidian-panel--properties">
+        <header class="obsidian-panel__header">
+          <h2>Properties</h2>
+        </header>
+        <dl class="obsidian-properties">
+          <?php foreach ($propertyLabels as $key => $label):
+            $value = $properties[$key] ?? '';
+            if ($key === 'due_date' && $value) {
+                try {
+                    $dt = new DateTimeImmutable($value);
+                    $formatted = $dt->format('M j, Y');
+                    if ($dt < new DateTimeImmutable('today')) {
+                        $value = '<span class="obsidian-overdue">' . sanitize($formatted) . '</span>';
+                    } else {
+                        $value = sanitize($formatted);
+                    }
+                } catch (Throwable $e) {
+                    $value = sanitize($value);
+                }
+            } elseif ($key === 'priority' && $value !== '') {
+                $badge = notes_priority_badge_class($value);
+                $value = '<span class="badge ' . sanitize($badge) . '">' . sanitize($value) . '</span>';
+            } else {
+                $value = $value !== '' ? sanitize((string)$value) : '<span class="obsidian-muted">—</span>';
+            }
+          ?>
+          <div class="obsidian-properties__item">
+            <dt><?= sanitize($label); ?></dt>
+            <dd><?= $value; ?></dd>
+          </div>
+          <?php endforeach; ?>
+        </dl>
+      </section>
+
+      <section class="obsidian-panel obsidian-panel--details">
+        <header class="obsidian-panel__header">
+          <h2>Details</h2>
+        </header>
+        <div class="obsidian-detail-grid">
+          <div>
+            <span class="obsidian-field-label">Owner</span>
+            <span><?= sanitize($ownerLabel); ?></span>
+          </div>
+          <div>
+            <span class="obsidian-field-label">Shared with</span>
+            <div class="obsidian-detail__shares" data-share-summary data-empty-text="Private">
+              <?php if ($shareDetails): ?>
+                <?php foreach ($shareDetails as $share): ?>
+                  <span class="obsidian-pill"><?= sanitize($share['label']); ?></span>
+                <?php endforeach; ?>
+              <?php else: ?>
+                <span class="obsidian-muted" data-share-empty>Private</span>
+              <?php endif; ?>
+            </div>
+          </div>
+        </div>
+      </section>
 
         <form method="post" class="obsidian-comment-form obsidian-comment-form--new">
           <label>
