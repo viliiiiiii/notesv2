@@ -344,6 +344,29 @@ function notes__ensure_templates_schema(PDO $pdo): bool {
     }
 }
 
+function notes__ensure_template_shares_schema(PDO $pdo): bool {
+    if (notes__table_exists($pdo, 'note_template_shares')) {
+        return true;
+    }
+    try {
+        $pdo->exec(
+            "CREATE TABLE IF NOT EXISTS note_template_shares (
+                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                template_id BIGINT UNSIGNED NOT NULL,
+                user_id BIGINT UNSIGNED NOT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY uniq_template_user (template_id, user_id),
+                INDEX idx_template_share_user (user_id),
+                CONSTRAINT fk_template_shares_template FOREIGN KEY (template_id) REFERENCES note_templates(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        );
+        return true;
+    } catch (Throwable $e) {
+        error_log('Failed ensuring note_template_shares: ' . $e->getMessage());
+        return false;
+    }
+}
+
 /* ---------- MIME/extension helpers ---------- */
 function notes_ext_for_mime(string $mime): ?string {
     return NOTES_ALLOWED_MIMES[$mime] ?? null;
@@ -623,6 +646,78 @@ function notes_templates_table_exists(?PDO $pdo = null): bool {
     return notes__table_exists($pdo, 'note_templates');
 }
 
+function notes_template_shares_table_exists(?PDO $pdo = null): bool {
+    $pdo = $pdo ?: get_pdo();
+    return notes__table_exists($pdo, 'note_template_shares');
+}
+
+function notes__normalize_template_row(array $row): array {
+    $properties = notes_default_properties();
+    if (!empty($row['properties'])) {
+        $decoded = json_decode((string)$row['properties'], true);
+        $properties = notes_normalize_properties(is_array($decoded) ? $decoded : []);
+    }
+    $tags = [];
+    if (!empty($row['tags'])) {
+        $decoded = json_decode((string)$row['tags'], true);
+        $tags = notes_normalize_tags_input(is_array($decoded) ? $decoded : []);
+    }
+    $blocks = [];
+    if (!empty($row['blocks'])) {
+        $decoded = json_decode((string)$row['blocks'], true);
+        if (is_array($decoded)) {
+            foreach ($decoded as $entry) {
+                if (!is_array($entry)) {
+                    continue;
+                }
+                $normalized = notes_normalize_block($entry, count($blocks) + 1);
+                if ($normalized) {
+                    unset($normalized['position']);
+                    $blocks[] = $normalized;
+                }
+            }
+        }
+    }
+
+    return [
+        'id'         => (int)($row['id'] ?? 0),
+        'name'       => (string)($row['name'] ?? ''),
+        'title'      => (string)($row['title'] ?? ''),
+        'icon'       => $row['icon'] ?? null,
+        'coverUrl'   => $row['cover_url'] ?? null,
+        'status'     => notes_normalize_status($row['status'] ?? NOTES_DEFAULT_STATUS),
+        'properties' => $properties,
+        'tags'       => $tags,
+        'blocks'     => $blocks,
+    ];
+}
+
+function notes_template_fetch(int $templateId): ?array {
+    $templateId = (int)$templateId;
+    if ($templateId <= 0) {
+        return null;
+    }
+    $pdo = get_pdo();
+    if (!notes_templates_table_exists($pdo)) {
+        return null;
+    }
+    $st = $pdo->prepare('SELECT * FROM note_templates WHERE id = :id LIMIT 1');
+    $st->execute([':id' => $templateId]);
+    $row = $st->fetch(PDO::FETCH_ASSOC);
+    if (!$row) {
+        return null;
+    }
+    $normalized = notes__normalize_template_row($row);
+    $normalized['owner_id'] = (int)($row['user_id'] ?? 0);
+    $normalized['share_count'] = 0;
+    if (notes_template_shares_table_exists($pdo)) {
+        $countSt = $pdo->prepare('SELECT COUNT(*) FROM note_template_shares WHERE template_id = :id');
+        $countSt->execute([':id' => $templateId]);
+        $normalized['share_count'] = (int)$countSt->fetchColumn();
+    }
+    return $normalized;
+}
+
 function notes_fetch_templates_for_user(int $userId): array {
     $userId = (int)$userId;
     if ($userId <= 0) {
@@ -632,53 +727,189 @@ function notes_fetch_templates_for_user(int $userId): array {
     if (!notes__ensure_templates_schema($pdo)) {
         return [];
     }
-    $sql = 'SELECT id, name, title, icon, cover_url, status, properties, tags, blocks
-            FROM note_templates
-            WHERE user_id = :user_id
-            ORDER BY name';
-    $st = $pdo->prepare($sql);
-    $st->execute([':user_id' => $userId]);
+    $shareReady = notes_template_shares_table_exists($pdo) || notes__ensure_template_shares_schema($pdo);
+
     $templates = [];
-    while ($row = $st->fetch(PDO::FETCH_ASSOC)) {
-        $properties = notes_default_properties();
-        if (!empty($row['properties'])) {
-            $decoded = json_decode((string)$row['properties'], true);
-            $properties = notes_normalize_properties(is_array($decoded) ? $decoded : []);
-        }
-        $tags = [];
-        if (!empty($row['tags'])) {
-            $decoded = json_decode((string)$row['tags'], true);
-            $tags = notes_normalize_tags_input(is_array($decoded) ? $decoded : []);
-        }
-        $blocks = [];
-        if (!empty($row['blocks'])) {
-            $decoded = json_decode((string)$row['blocks'], true);
-            if (is_array($decoded)) {
-                foreach ($decoded as $entry) {
-                    if (!is_array($entry)) {
-                        continue;
-                    }
-                    $normalized = notes_normalize_block($entry, count($blocks) + 1);
-                    if ($normalized) {
-                        unset($normalized['position']);
-                        $blocks[] = $normalized;
-                    }
-                }
+    $seen      = [];
+
+    $ownedSql = 'SELECT t.*, 0 AS share_count FROM note_templates t WHERE t.user_id = :user ORDER BY t.name';
+    if ($shareReady) {
+        $ownedSql = 'SELECT t.*, (SELECT COUNT(*) FROM note_template_shares s WHERE s.template_id = t.id) AS share_count
+                     FROM note_templates t
+                     WHERE t.user_id = :user
+                     ORDER BY t.name';
+    }
+    $owned = $pdo->prepare($ownedSql);
+    $owned->execute([':user' => $userId]);
+    while ($row = $owned->fetch(PDO::FETCH_ASSOC)) {
+        $normalized = notes__normalize_template_row($row);
+        $normalized['owner_id']   = (int)($row['user_id'] ?? 0);
+        $normalized['is_owner']   = true;
+        $normalized['shared_from']= null;
+        $normalized['share_count']= (int)($row['share_count'] ?? 0);
+        $templates[] = $normalized;
+        $seen[$normalized['id']] = true;
+    }
+
+    if ($shareReady) {
+        $sharedIds = [];
+        $sharedIdStmt = $pdo->prepare('SELECT DISTINCT template_id FROM note_template_shares WHERE user_id = :user');
+        $sharedIdStmt->execute([':user' => $userId]);
+        while ($row = $sharedIdStmt->fetch(PDO::FETCH_ASSOC)) {
+            $tid = (int)($row['template_id'] ?? 0);
+            if ($tid > 0 && !isset($seen[$tid])) {
+                $sharedIds[] = $tid;
             }
         }
-        $templates[] = [
-            'id'         => (int)($row['id'] ?? 0),
-            'name'       => (string)($row['name'] ?? ''),
-            'title'      => (string)($row['title'] ?? ''),
-            'icon'       => $row['icon'] ?? null,
-            'coverUrl'   => $row['cover_url'] ?? null,
-            'status'     => notes_normalize_status($row['status'] ?? NOTES_DEFAULT_STATUS),
-            'properties' => $properties,
-            'tags'       => $tags,
-            'blocks'     => $blocks,
+        if ($sharedIds) {
+            $placeholders = implode(',', array_fill(0, count($sharedIds), '?'));
+            $sharedSql = 'SELECT t.*, (SELECT COUNT(*) FROM note_template_shares s WHERE s.template_id = t.id) AS share_count
+                          FROM note_templates t
+                          WHERE t.id IN (' . $placeholders . ')
+                          ORDER BY t.name';
+            $sharedStmt = $pdo->prepare($sharedSql);
+            $sharedStmt->execute($sharedIds);
+            while ($row = $sharedStmt->fetch(PDO::FETCH_ASSOC)) {
+                $normalized = notes__normalize_template_row($row);
+                $normalized['owner_id']    = (int)($row['user_id'] ?? 0);
+                $normalized['is_owner']    = ((int)($row['user_id'] ?? 0) === $userId);
+                $normalized['shared_from'] = $normalized['is_owner'] ? null : notes_user_label((int)($row['user_id'] ?? 0));
+                $normalized['share_count'] = (int)($row['share_count'] ?? 0);
+                $templates[] = $normalized;
+                $seen[$normalized['id']] = true;
+            }
+        }
+    }
+
+    usort($templates, static function ($a, $b) {
+        return strcasecmp($a['name'] ?? '', $b['name'] ?? '');
+    });
+
+    return $templates;
+}
+
+function notes_fetch_templates_owned(int $userId): array {
+    return array_values(array_filter(
+        notes_fetch_templates_for_user($userId),
+        static fn($tpl) => !empty($tpl['is_owner'])
+    ));
+}
+
+function notes_get_template_share_user_ids(int $templateId): array {
+    $templateId = (int)$templateId;
+    if ($templateId <= 0) {
+        return [];
+    }
+    $pdo = get_pdo();
+    if (!notes_template_shares_table_exists($pdo)) {
+        return [];
+    }
+    $st = $pdo->prepare('SELECT user_id FROM note_template_shares WHERE template_id = :id');
+    $st->execute([':id' => $templateId]);
+    return array_map('intval', array_column($st->fetchAll(PDO::FETCH_ASSOC) ?: [], 'user_id'));
+}
+
+function notes_template_share_details(int $templateId): array {
+    $ids = notes_get_template_share_user_ids($templateId);
+    if (!$ids) {
+        return [];
+    }
+    $labels = notes_fetch_users_map($ids);
+    $out = [];
+    foreach ($ids as $id) {
+        $out[] = [
+            'id'    => $id,
+            'label' => $labels[$id] ?? ('User #' . $id),
         ];
     }
-    return $templates;
+    return $out;
+}
+
+function notes_update_template_shares(int $templateId, array $userIds): void {
+    $templateId = (int)$templateId;
+    $userIds = array_values(array_unique(array_filter(array_map('intval', $userIds))));
+    if ($templateId <= 0) {
+        return;
+    }
+    $pdo = get_pdo();
+    if (!notes_template_shares_table_exists($pdo) && !notes__ensure_template_shares_schema($pdo)) {
+        throw new RuntimeException('note_template_shares table not available.');
+    }
+    $pdo->beginTransaction();
+    try {
+        $pdo->prepare('DELETE FROM note_template_shares WHERE template_id = :id')->execute([':id' => $templateId]);
+        if ($userIds) {
+            $ins = $pdo->prepare('INSERT INTO note_template_shares (template_id, user_id) VALUES (:tid, :uid)');
+            foreach ($userIds as $uid) {
+                $ins->execute([':tid' => $templateId, ':uid' => $uid]);
+            }
+        }
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        throw $e;
+    }
+}
+
+function notes_apply_template_shares(int $templateId, array $userIds, array $template, bool $notify = true): array {
+    $before = notes_get_template_share_user_ids($templateId);
+    notes_update_template_shares($templateId, $userIds);
+    $after = notes_get_template_share_user_ids($templateId);
+
+    $added   = array_values(array_diff($after, $before));
+    $removed = array_values(array_diff($before, $after));
+
+    if ($notify && $added) {
+        $ownerId = (int)($template['owner_id'] ?? ($template['user_id'] ?? 0));
+        $title   = trim((string)($template['name'] ?? 'Template'));
+        $who     = notes_user_label($ownerId);
+        $link    = '/notes/new.php?template=' . (int)$templateId;
+        $titleMsg= 'A note template was shared with you';
+        $bodyMsg = "“{$title}” — shared by {$who}";
+        $payload = ['template_id' => (int)$templateId];
+        try {
+            notify_users($added, 'note.template.share', $titleMsg, $bodyMsg, $link, $payload);
+        } catch (Throwable $e) {
+            error_log('Failed notifying template share: ' . $e->getMessage());
+        }
+    }
+
+    log_event('note.template.share', 'note_template', (int)$templateId, [
+        'added'   => $added,
+        'removed' => $removed,
+    ]);
+
+    return [
+        'before' => array_map('intval', $before),
+        'after'  => array_map('intval', $after),
+        'added'  => $added,
+        'removed'=> $removed,
+    ];
+}
+
+function notes_template_can_share(array $template, ?int $userId = null): bool {
+    $userId = $userId ?? (int)(current_user()['id'] ?? 0);
+    if ($userId <= 0) {
+        return false;
+    }
+    $owner = (int)($template['owner_id'] ?? ($template['user_id'] ?? 0));
+    return $owner === $userId;
+}
+
+function notes_template_is_visible_to_user(array $template, int $userId): bool {
+    $userId = (int)$userId;
+    if ($userId <= 0) {
+        return false;
+    }
+    if (notes_template_can_share($template, $userId)) {
+        return true;
+    }
+    $templateId = (int)($template['id'] ?? 0);
+    if ($templateId <= 0) {
+        return false;
+    }
+    $shares = notes_get_template_share_user_ids($templateId);
+    return in_array($userId, $shares, true);
 }
 
 function notes_create_template_from_note(int $noteId, int $userId, string $name): int {
@@ -1338,6 +1569,26 @@ function notes_fetch_users_map(array $ids): array {
     }
 
     return $map;
+}
+
+function notes_user_label(int $userId): string {
+    static $cache = null;
+    if ($cache === null) {
+        $cache = [];
+        $users = notes_all_users();
+        foreach ($users as $user) {
+            $uid = (int)($user['id'] ?? 0);
+            if ($uid <= 0) {
+                continue;
+            }
+            $label = trim((string)($user['email'] ?? ''));
+            $cache[$uid] = $label !== '' ? $label : ('User #' . $uid);
+        }
+    }
+    if (isset($cache[$userId])) {
+        return $cache[$userId];
+    }
+    return 'User #' . $userId;
 }
 
 function notes_get_share_details(int $noteId): array {

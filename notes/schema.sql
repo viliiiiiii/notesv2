@@ -102,6 +102,17 @@ CREATE TABLE IF NOT EXISTS note_templates (
   INDEX idx_template_user (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Template sharing (Obsidian-style vault sharing)
+CREATE TABLE IF NOT EXISTS note_template_shares (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  template_id BIGINT UNSIGNED NOT NULL,
+  user_id BIGINT UNSIGNED NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_template_user (template_id, user_id),
+  INDEX idx_template_share_user (user_id),
+  CONSTRAINT fk_template_shares_template FOREIGN KEY (template_id) REFERENCES note_templates(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- Legacy helpers (kept for backward compatibility; safe to ignore if already provisioned)
 CREATE TABLE IF NOT EXISTS tags (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
