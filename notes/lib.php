@@ -314,6 +314,36 @@ function notes__ensure_note_tags_schema(PDO $pdo): bool {
     }
 }
 
+function notes__ensure_templates_schema(PDO $pdo): bool {
+    if (notes__table_exists($pdo, 'note_templates')) {
+        return true;
+    }
+    try {
+        $pdo->exec(
+            "CREATE TABLE IF NOT EXISTS note_templates (
+                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                user_id BIGINT UNSIGNED NOT NULL,
+                name VARCHAR(200) NOT NULL,
+                title VARCHAR(200) NULL,
+                icon VARCHAR(32) NULL,
+                cover_url VARCHAR(1000) NULL,
+                status VARCHAR(32) NULL,
+                properties LONGTEXT NULL,
+                tags LONGTEXT NULL,
+                blocks LONGTEXT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uniq_user_name (user_id, name),
+                INDEX idx_template_user (user_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        );
+        return true;
+    } catch (Throwable $e) {
+        error_log('Failed ensuring note_templates: ' . $e->getMessage());
+        return false;
+    }
+}
+
 /* ---------- MIME/extension helpers ---------- */
 function notes_ext_for_mime(string $mime): ?string {
     return NOTES_ALLOWED_MIMES[$mime] ?? null;
@@ -585,6 +615,145 @@ function notes_all_tag_options(): array {
             'color' => (string)($row['color'] ?? notes_random_tag_color()),
         ];
     }, $rows);
+}
+
+/* ---------- templates ---------- */
+function notes_templates_table_exists(?PDO $pdo = null): bool {
+    $pdo = $pdo ?: get_pdo();
+    return notes__table_exists($pdo, 'note_templates');
+}
+
+function notes_fetch_templates_for_user(int $userId): array {
+    $userId = (int)$userId;
+    if ($userId <= 0) {
+        return [];
+    }
+    $pdo = get_pdo();
+    if (!notes__ensure_templates_schema($pdo)) {
+        return [];
+    }
+    $sql = 'SELECT id, name, title, icon, cover_url, status, properties, tags, blocks
+            FROM note_templates
+            WHERE user_id = :user_id
+            ORDER BY name';
+    $st = $pdo->prepare($sql);
+    $st->execute([':user_id' => $userId]);
+    $templates = [];
+    while ($row = $st->fetch(PDO::FETCH_ASSOC)) {
+        $properties = notes_default_properties();
+        if (!empty($row['properties'])) {
+            $decoded = json_decode((string)$row['properties'], true);
+            $properties = notes_normalize_properties(is_array($decoded) ? $decoded : []);
+        }
+        $tags = [];
+        if (!empty($row['tags'])) {
+            $decoded = json_decode((string)$row['tags'], true);
+            $tags = notes_normalize_tags_input(is_array($decoded) ? $decoded : []);
+        }
+        $blocks = [];
+        if (!empty($row['blocks'])) {
+            $decoded = json_decode((string)$row['blocks'], true);
+            if (is_array($decoded)) {
+                foreach ($decoded as $entry) {
+                    if (!is_array($entry)) {
+                        continue;
+                    }
+                    $normalized = notes_normalize_block($entry, count($blocks) + 1);
+                    if ($normalized) {
+                        unset($normalized['position']);
+                        $blocks[] = $normalized;
+                    }
+                }
+            }
+        }
+        $templates[] = [
+            'id'         => (int)($row['id'] ?? 0),
+            'name'       => (string)($row['name'] ?? ''),
+            'title'      => (string)($row['title'] ?? ''),
+            'icon'       => $row['icon'] ?? null,
+            'coverUrl'   => $row['cover_url'] ?? null,
+            'status'     => notes_normalize_status($row['status'] ?? NOTES_DEFAULT_STATUS),
+            'properties' => $properties,
+            'tags'       => $tags,
+            'blocks'     => $blocks,
+        ];
+    }
+    return $templates;
+}
+
+function notes_create_template_from_note(int $noteId, int $userId, string $name): int {
+    $userId = (int)$userId;
+    $name   = trim($name);
+    if ($userId <= 0) {
+        throw new InvalidArgumentException('Missing template owner.');
+    }
+    if ($name === '') {
+        throw new InvalidArgumentException('Template name required.');
+    }
+
+    $pdo = get_pdo();
+    if (!notes__ensure_templates_schema($pdo)) {
+        throw new RuntimeException('Templates storage unavailable.');
+    }
+
+    $note = notes_fetch($noteId);
+    if (!$note) {
+        throw new RuntimeException('Note not found.');
+    }
+
+    $meta    = notes_fetch_page_meta($noteId);
+    $blocks  = notes_fetch_blocks($noteId);
+    $tags    = notes_fetch_note_tags($noteId);
+    $payloadBlocks = [];
+    foreach ($blocks as $block) {
+        if (!is_array($block)) {
+            continue;
+        }
+        $normalized = notes_normalize_block($block, count($payloadBlocks) + 1);
+        if ($normalized) {
+            unset($normalized['position']);
+            $payloadBlocks[] = $normalized;
+        }
+    }
+    $payloadTags = [];
+    foreach ($tags as $tag) {
+        $label = trim((string)($tag['label'] ?? ''));
+        if ($label === '') {
+            continue;
+        }
+        $payloadTags[] = [
+            'label' => $label,
+            'color' => notes_validate_color($tag['color'] ?? null),
+        ];
+    }
+
+    $sql = 'INSERT INTO note_templates (user_id, name, title, icon, cover_url, status, properties, tags, blocks)
+            VALUES (:user_id, :name, :title, :icon, :cover_url, :status, :properties, :tags, :blocks)
+            ON DUPLICATE KEY UPDATE
+              title = VALUES(title),
+              icon = VALUES(icon),
+              cover_url = VALUES(cover_url),
+              status = VALUES(status),
+              properties = VALUES(properties),
+              tags = VALUES(tags),
+              blocks = VALUES(blocks),
+              updated_at = CURRENT_TIMESTAMP,
+              id = LAST_INSERT_ID(id)';
+
+    $st = $pdo->prepare($sql);
+    $st->execute([
+        ':user_id'    => $userId,
+        ':name'       => $name,
+        ':title'      => (string)($note['title'] ?? ''),
+        ':icon'       => $meta['icon'] ?? null,
+        ':cover_url'  => $meta['cover_url'] ?? null,
+        ':status'     => $meta['status'] ?? NOTES_DEFAULT_STATUS,
+        ':properties' => json_encode($meta['properties'] ?? notes_default_properties(), JSON_UNESCAPED_UNICODE),
+        ':tags'       => json_encode($payloadTags, JSON_UNESCAPED_UNICODE),
+        ':blocks'     => json_encode($payloadBlocks, JSON_UNESCAPED_UNICODE),
+    ]);
+
+    return (int)$pdo->lastInsertId();
 }
 
 function notes_insert(array $data): int {

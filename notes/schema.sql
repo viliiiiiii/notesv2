@@ -84,6 +84,24 @@ CREATE TABLE IF NOT EXISTS note_tag_assignments (
   CONSTRAINT fk_note_tag_assign_tag FOREIGN KEY (tag_id) REFERENCES note_tags_catalog(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Reusable page templates (Notion-style)
+CREATE TABLE IF NOT EXISTS note_templates (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT UNSIGNED NOT NULL,
+  name VARCHAR(200) NOT NULL,
+  title VARCHAR(200) NULL,
+  icon VARCHAR(32) NULL,
+  cover_url VARCHAR(1000) NULL,
+  status VARCHAR(32) NULL,
+  properties LONGTEXT NULL,
+  tags LONGTEXT NULL,
+  blocks LONGTEXT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_user_name (user_id, name),
+  INDEX idx_template_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- Legacy helpers (kept for backward compatibility; safe to ignore if already provisioned)
 CREATE TABLE IF NOT EXISTS tags (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

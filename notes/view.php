@@ -486,15 +486,16 @@ include __DIR__ . '/../includes/header.php';
                   </header>
                   <div class="note-comment__body"><?= nl2br(sanitize($comment['body'] ?? '')); ?></div>
                   <footer class="note-comment__footer">
-                    <details>
-                      <summary>Reply</summary>
-                      <form method="post" class="note-comment-form">
-                        <textarea name="body" rows="3" required></textarea>
-                        <input type="hidden" name="parent_id" value="<?= (int)$comment['id']; ?>">
-                        <input type="hidden" name="<?= CSRF_TOKEN_NAME; ?>" value="<?= sanitize($csrfToken); ?>">
+                    <button class="btn small ghost" type="button" data-reply-toggle>Reply</button>
+                    <form method="post" class="note-comment-form note-comment-form--inline" data-reply-form hidden>
+                      <textarea name="body" rows="3" required></textarea>
+                      <input type="hidden" name="parent_id" value="<?= (int)$comment['id']; ?>">
+                      <input type="hidden" name="<?= CSRF_TOKEN_NAME; ?>" value="<?= sanitize($csrfToken); ?>">
+                      <div class="note-comment-form__actions">
                         <button class="btn small" type="submit" name="add_comment" value="1">Post reply</button>
-                      </form>
-                    </details>
+                        <button class="btn small secondary" type="button" data-reply-cancel>Cancel</button>
+                      </div>
+                    </form>
                   </footer>
                   <?php if (!empty($comment['children'])): ?>
                     <div class="note-comment__children">
@@ -585,15 +586,15 @@ include __DIR__ . '/../includes/header.php';
 <?php endif; ?>
 
 <style>
-.note-page{ display:grid; gap:1.25rem; padding-bottom:2rem; }
-.note-hero{ position:relative; border-radius:16px; overflow:hidden; background:#fff; border:1px solid #e2e8f0; box-shadow:0 8px 24px rgba(15,23,42,.05); }
+.note-page{ display:grid; gap:1rem; padding-bottom:1.5rem; }
+.note-hero{ position:relative; border-radius:14px; overflow:hidden; background:#fff; border:1px solid #e2e8f0; box-shadow:0 6px 18px rgba(15,23,42,.04); }
 .note-hero.has-cover{ color:#0f172a; }
-.note-hero__cover{ position:absolute; inset:0; background-size:cover; background-position:center; opacity:.18; }
-.note-hero__inner{ position:relative; padding:1.75rem 2rem; display:flex; flex-direction:column; gap:1rem; }
-.note-hero__top{ display:flex; align-items:flex-start; justify-content:space-between; gap:1.25rem; flex-wrap:wrap; }
-.note-hero__identity{ display:flex; gap:1rem; align-items:center; }
-.note-icon{ width:56px; height:56px; border-radius:14px; display:grid; place-items:center; font-size:1.75rem; background:#f1f5f9; border:1px solid #e2e8f0; }
-.note-hero h1{ margin:0; font-size:1.8rem; line-height:1.2; font-weight:600; }
+.note-hero__cover{ position:absolute; inset:0; background-size:cover; background-position:center; opacity:.16; }
+.note-hero__inner{ position:relative; padding:1.4rem 1.6rem; display:flex; flex-direction:column; gap:.85rem; }
+.note-hero__top{ display:flex; align-items:flex-start; justify-content:space-between; gap:1rem; flex-wrap:wrap; }
+.note-hero__identity{ display:flex; gap:.85rem; align-items:center; }
+.note-icon{ width:48px; height:48px; border-radius:12px; display:grid; place-items:center; font-size:1.5rem; background:#f1f5f9; border:1px solid #e2e8f0; }
+.note-hero h1{ margin:0; font-size:1.6rem; line-height:1.2; font-weight:600; }
 .note-meta{ display:flex; gap:.4rem; flex-wrap:wrap; align-items:center; font-size:.85rem; color:#475569; }
 .note-meta__date{ color:#475569; }
 .note-meta__chip{ background:#e2e8f0; padding:.2rem .6rem; border-radius:999px; font-size:.8rem; }
@@ -603,11 +604,11 @@ include __DIR__ . '/../includes/header.php';
 .note-tag{ display:inline-flex; align-items:center; gap:.25rem; padding:.3rem .6rem; border-radius:999px; background:#f8fafc; color:#1f2937; font-size:.8rem; border:1px solid #e2e8f0; }
 .note-tag::before{ content:''; width:6px; height:6px; border-radius:50%; background:var(--tag-color,#6366f1); }
 
-.note-layout{ display:grid; gap:1.25rem; }
+.note-layout{ display:grid; gap:1rem; }
 @media (min-width: 1100px){ .note-layout{ grid-template-columns: minmax(0,1fr) 300px; align-items:start; } }
 
-.note-content{ padding:1.75rem; display:grid; gap:1.25rem; background:#fff; border:1px solid #e2e8f0; border-radius:16px; box-shadow:0 6px 18px rgba(15,23,42,.04); }
-.note-blocks{ display:grid; gap:1.25rem; }
+.note-content{ padding:1.4rem; display:grid; gap:1rem; background:#fff; border:1px solid #e2e8f0; border-radius:14px; box-shadow:0 5px 16px rgba(15,23,42,.035); }
+.note-blocks{ display:grid; gap:1rem; }
 .note-block p{ margin:0; font-size:1rem; line-height:1.6; color:#0f172a; }
 .note-block__heading{ margin:0; font-weight:600; color:#0f172a; }
 .note-block__heading--h1{ font-size:1.7rem; }
@@ -621,8 +622,8 @@ include __DIR__ . '/../includes/header.php';
 .note-block__callout-icon{ font-size:1.35rem; }
 .note-block__divider{ height:1px; background:#e2e8f0; }
 
-.note-sidebar{ display:grid; gap:1rem; }
-.note-panel{ padding:1.25rem 1.5rem; display:grid; gap:1rem; background:#fff; border:1px solid #e2e8f0; border-radius:14px; box-shadow:0 4px 14px rgba(15,23,42,.04); }
+.note-sidebar{ display:grid; gap:.85rem; }
+.note-panel{ padding:1.1rem 1.3rem; display:grid; gap:.85rem; background:#fff; border:1px solid #e2e8f0; border-radius:12px; box-shadow:0 4px 12px rgba(15,23,42,.035); }
 .note-panel__header{ display:flex; justify-content:space-between; align-items:center; gap:.75rem; }
 .note-panel__header h2{ margin:0; font-size:1.05rem; font-weight:600; }
 .note-panel__body{ display:grid; gap:.65rem; }
@@ -638,19 +639,22 @@ include __DIR__ . '/../includes/header.php';
 .note-photo-thumb img{ width:100%; height:100%; object-fit:cover; aspect-ratio:4/3; }
 .note-photo-empty{ border:1px dashed #cbd5f5; border-radius:10px; display:grid; place-items:center; min-height:100px; font-size:.8rem; color:#64748b; }
 
-.note-discussion{ padding:1.75rem; display:grid; gap:1.25rem; background:#fff; border:1px solid #e2e8f0; border-radius:16px; box-shadow:0 6px 18px rgba(15,23,42,.04); }
+.note-discussion{ padding:1.4rem; display:grid; gap:1rem; background:#fff; border:1px solid #e2e8f0; border-radius:14px; box-shadow:0 5px 16px rgba(15,23,42,.035); }
 .note-discussion__body{ display:grid; gap:1rem; }
-.note-comments{ display:grid; gap:1rem; }
-.note-comment{ border:1px solid #e2e8f0; border-radius:12px; padding:1rem 1.1rem; background:#fff; display:grid; gap:.6rem; }
+.note-comments{ display:grid; gap:.9rem; }
+.note-comment{ border:1px solid #e2e8f0; border-radius:10px; padding:.9rem 1rem; background:#fff; display:grid; gap:.55rem; }
 .note-comment__header{ display:flex; justify-content:space-between; gap:.75rem; align-items:flex-start; }
 .note-comment__timestamp{ display:block; font-size:.78rem; color:#64748b; margin-top:.15rem; }
 .note-comment__delete .btn{ font-size:.75rem; }
 .note-comment__body{ white-space:pre-wrap; color:#0f172a; line-height:1.5; }
-.note-comment__footer details{ font-size:.88rem; }
+.note-comment__footer{ display:flex; gap:.6rem; flex-wrap:wrap; align-items:flex-start; }
 .note-comment__children{ border-left:2px solid #e2e8f0; margin-left:.6rem; padding-left:.75rem; display:grid; gap:.75rem; }
 .note-comment-form{ display:grid; gap:.65rem; }
 .note-comment-form textarea{ width:100%; border-radius:.65rem; border:1px solid #d0d7e2; padding:.6rem .75rem; resize:vertical; font-size:.95rem; }
 .note-comment-form--new label{ display:grid; gap:.35rem; }
+.note-comment-form--inline{ margin-top:.4rem; }
+.note-comment-form--inline[hidden]{ display:none; }
+.note-comment-form__actions{ display:flex; gap:.4rem; }
 
 .share-modal{ position:fixed; inset:0; z-index:40; display:grid; place-items:center; padding:1.5rem; background:rgba(15,23,42,.35); backdrop-filter:blur(4px); transition:opacity .2s ease; }
 .share-modal.hidden{ opacity:0; pointer-events:none; }
@@ -727,6 +731,60 @@ document.addEventListener('DOMContentLoaded', () => {
     selected: new Set(),
     options: [],
   };
+
+  const replyForms = Array.from(document.querySelectorAll('[data-reply-form]'));
+
+  function closeReplyForm(form) {
+    if (!form) return;
+    form.setAttribute('hidden', '');
+    const toggle = form.parentElement ? form.parentElement.querySelector('[data-reply-toggle]') : null;
+    if (toggle) {
+      toggle.setAttribute('aria-expanded', 'false');
+    }
+  }
+
+  function openReplyForm(form, toggle) {
+    if (!form) return;
+    replyForms.forEach((other) => {
+      if (other !== form) {
+        closeReplyForm(other);
+      }
+    });
+    form.removeAttribute('hidden');
+    if (toggle) {
+      toggle.setAttribute('aria-expanded', 'true');
+    }
+    const textarea = form.querySelector('textarea');
+    if (textarea) {
+      textarea.focus();
+    }
+  }
+
+  document.querySelectorAll('[data-reply-toggle]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const wrapper = button.closest('.note-comment__footer');
+      if (!wrapper) {
+        return;
+      }
+      const form = wrapper.querySelector('[data-reply-form]');
+      if (!form) {
+        return;
+      }
+      const isHidden = form.hasAttribute('hidden');
+      if (isHidden) {
+        openReplyForm(form, button);
+      } else {
+        closeReplyForm(form);
+      }
+    });
+  });
+
+  document.querySelectorAll('[data-reply-cancel]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const form = button.closest('[data-reply-form]');
+      closeReplyForm(form);
+    });
+  });
 
   if (canShare) {
     const rawConfig = page ? (page.getAttribute('data-share-config') || '') : '';

@@ -3,11 +3,19 @@ declare(strict_types=1);
 require_once __DIR__ . '/lib.php';
 require_login();
 
+$me   = current_user();
+$meId = (int)($me['id'] ?? 0);
+
 $id   = (int)($_GET['id'] ?? 0);
 $note = notes_fetch($id);
 if (!$note || !notes_can_view($note)) {
     redirect_with_message('index.php', 'Note not found or no access.', 'error');
     exit;
+}
+
+$noteDateValue = trim((string)($note['note_date'] ?? ''));
+if ($noteDateValue === '' || $noteDateValue === '0000-00-00') {
+    $note['note_date'] = date('Y-m-d');
 }
 
 $canEdit      = notes_can_edit($note);
@@ -31,6 +39,21 @@ if (is_post()) {
     if (!verify_csrf_token($_POST[CSRF_TOKEN_NAME] ?? null)) {
         $errors[] = 'Invalid CSRF token.';
     } else {
+        if (isset($_POST['save_template']) && $canEdit) {
+            $templateName = trim((string)($_POST['template_name'] ?? ''));
+            if ($templateName === '') {
+                $errors[] = 'Template name is required.';
+            } else {
+                try {
+                    notes_create_template_from_note($id, $meId, $templateName);
+                    redirect_with_message('edit.php?id=' . $id, 'Template saved for quick reuse.', 'success');
+                } catch (Throwable $e) {
+                    error_log('notes_create_template_from_note failed: ' . $e->getMessage());
+                    $errors[] = 'Unable to save template.';
+                }
+            }
+        }
+
         if (isset($_POST['delete_note']) && $canEdit) {
             notes_delete($id);
             log_event('note.delete', 'note', $id);
@@ -38,7 +61,7 @@ if (is_post()) {
         }
 
         if (isset($_POST['save_note']) && $canEdit) {
-            $noteDate = (string)($_POST['note_date'] ?? '');
+            $noteDate = (string)($_POST['note_date'] ?? ($note['note_date'] ?? date('Y-m-d')));
             $title    = trim((string)($_POST['title'] ?? ''));
             $bodyRaw  = trim((string)($_POST['body'] ?? ''));
             $icon     = trim((string)($_POST['icon'] ?? ''));
@@ -332,6 +355,20 @@ $selectedShares= array_flip($currentShares);
       <?php endif; ?>
 
       <?php if ($canEdit): ?>
+      <form method="post" class="card card--surface note-template" novalidate>
+        <h2>Template</h2>
+        <p class="muted">Capture this page structure for new notes.</p>
+        <label class="note-template__field">Template name
+          <input type="text" name="template_name" maxlength="200" value="<?= sanitize($_POST['template_name'] ?? ($note['title'] ?? '')); ?>" required>
+        </label>
+        <input type="hidden" name="<?= CSRF_TOKEN_NAME; ?>" value="<?= csrf_token(); ?>">
+        <div class="note-template__actions">
+          <button class="btn secondary" type="submit" name="save_template" value="1">Save as template</button>
+        </div>
+      </form>
+      <?php endif; ?>
+
+      <?php if ($canEdit): ?>
       <form method="post" class="card note-danger" onsubmit="return confirm('Delete this note? This cannot be undone.');">
         <h2>Danger zone</h2>
         <p class="muted">Deleting removes the note, its blocks, comments, and attachments.</p>
@@ -355,7 +392,12 @@ $selectedShares= array_flip($currentShares);
 .note-composer{ background:#fff; border:1px solid #e2e8f0; border-radius:16px; overflow:hidden; box-shadow:0 6px 18px rgba(15,23,42,.04); }
 .note-sidebar{ display:grid; gap:1rem; }
 
-.note-cover{ position:relative; height:200px; background:linear-gradient(135deg,#f8fafc,#e2e8f0); border-radius:16px 16px 0 0; background-size:cover; background-position:center; }
+.note-template{ display:grid; gap:.7rem; }
+.note-template__field{ display:grid; gap:.35rem; font-size:.85rem; color:#475569; }
+.note-template__field input{ border-radius:.55rem; border:1px solid #d0d7e2; padding:.55rem .7rem; }
+.note-template__actions{ display:flex; justify-content:flex-end; }
+
+.note-cover{ position:relative; height:170px; background:linear-gradient(135deg,#f8fafc,#e2e8f0); border-radius:16px 16px 0 0; background-size:cover; background-position:center; }
 .note-cover__overlay{ position:absolute; inset:0; padding:1rem 1.25rem; display:flex; justify-content:space-between; align-items:flex-end; gap:.75rem; background:linear-gradient(180deg,rgba(15,23,42,0.05),rgba(15,23,42,0.25)); color:#f8fafc; }
 .note-cover__control{ display:flex; flex-direction:column; gap:.35rem; font-size:.85rem; }
 .note-cover__control input{ border-radius:10px; border:1px solid rgba(255,255,255,.6); background:rgba(15,23,42,.25); color:#fff; padding:.4rem .7rem; }

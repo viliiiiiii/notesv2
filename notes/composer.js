@@ -252,7 +252,9 @@
     state.tags.forEach((tag, index) => {
       const pill = document.createElement('span');
       pill.className = 'note-tag';
-      pill.style.setProperty('--tag-color', tag.color || randomColor());
+      const color = tag.color || randomColor();
+      tag.color = color;
+      pill.style.setProperty('--tag-color', color);
       pill.textContent = tag.label;
       const btn = document.createElement('button');
       btn.type = 'button';
@@ -300,6 +302,7 @@
         state.coverPreview.classList.remove('has-cover');
       }
     };
+    state.coverApply = apply;
     state.coverInput.addEventListener('input', apply);
     if (state.coverClear) {
       state.coverClear.addEventListener('click', () => {
@@ -318,8 +321,106 @@
       const val = state.iconInput.value.trim();
       state.iconPreview.textContent = val || '📄';
     };
+    state.iconApply = apply;
     state.iconInput.addEventListener('input', apply);
     apply();
+  }
+
+  function cloneBlockForState(block) {
+    return {
+      uid: 'blk_' + Math.random().toString(16).slice(2, 10),
+      type: block.type || 'paragraph',
+      text: block.text || '',
+      checked: !!block.checked,
+      items: Array.isArray(block.items) ? block.items.map((item) => String(item)) : [],
+      icon: block.icon || null,
+      color: block.color || null,
+    };
+  }
+
+  function applyTemplate(state, template) {
+    if (!template) {
+      return;
+    }
+    if (state.titleField && template.title) {
+      state.titleField.value = template.title;
+    }
+    if (state.statusField && template.status) {
+      const match = Array.from(state.statusField.options || []).find((opt) => opt.value === template.status);
+      state.statusField.value = match ? template.status : state.statusField.value;
+    }
+    if (state.propertyFields) {
+      const props = template.properties || {};
+      if (state.propertyFields.project) {
+        state.propertyFields.project.value = props.project || '';
+      }
+      if (state.propertyFields.location) {
+        state.propertyFields.location.value = props.location || '';
+      }
+      if (state.propertyFields.due_date) {
+        state.propertyFields.due_date.value = props.due_date || '';
+      }
+      if (state.propertyFields.priority) {
+        const priority = props.priority || '';
+        const matchPriority = Array.from(state.propertyFields.priority.options || []).find((opt) => opt.value === priority);
+        state.propertyFields.priority.value = matchPriority ? priority : state.propertyFields.priority.value;
+      }
+    }
+    if (state.iconInput) {
+      state.iconInput.value = template.icon || '';
+      if (state.iconApply) {
+        state.iconApply();
+      }
+    }
+    if (state.coverInput) {
+      state.coverInput.value = template.coverUrl || '';
+      if (state.coverApply) {
+        state.coverApply();
+      }
+    }
+    const templateTags = Array.isArray(template.tags) ? template.tags : [];
+    state.tags = templateTags
+      .map((tag) => ({
+        label: String(tag.label || ''),
+        color: tag.color || null,
+      }))
+      .filter((tag) => tag.label.trim() !== '');
+    const templateBlocks = Array.isArray(template.blocks) && template.blocks.length
+      ? template.blocks
+      : [createDefaultBlock('paragraph')];
+    state.blocks = templateBlocks.map((block) => cloneBlockForState(block));
+    renderBlocks(state);
+    renderTags(state);
+  }
+
+  function resetToBlank(state) {
+    state.blocks = [createDefaultBlock('paragraph')];
+    state.tags = [];
+    if (state.iconInput) {
+      state.iconInput.value = '';
+      if (state.iconApply) {
+        state.iconApply();
+      }
+    }
+    if (state.coverInput) {
+      state.coverInput.value = '';
+      if (state.coverApply) {
+        state.coverApply();
+      }
+    }
+    if (state.propertyFields) {
+      if (state.propertyFields.project) state.propertyFields.project.value = '';
+      if (state.propertyFields.location) state.propertyFields.location.value = '';
+      if (state.propertyFields.due_date) state.propertyFields.due_date.value = '';
+      if (state.propertyFields.priority && state.defaultPriority) {
+        state.propertyFields.priority.value = state.defaultPriority;
+      }
+    }
+    if (state.statusField && state.defaultStatus) {
+      state.statusField.value = state.defaultStatus;
+    }
+    renderBlocks(state);
+    renderTags(state);
   }
 
   function initComposer(el) {
@@ -339,6 +440,7 @@
         label: String(tag.label || ''),
         color: tag.color || randomColor(),
       })).filter((tag) => tag.label.trim() !== '') : [],
+      templates: Array.isArray(config.templates) ? config.templates : [],
       blockList: el.querySelector('[data-block-list]'),
       blocksField: el.querySelector('[data-blocks-field]'),
       bodyFallback: el.querySelector('[data-body-fallback]'),
@@ -351,7 +453,29 @@
       coverClear: el.querySelector('[data-cover-clear]'),
       iconInput: el.querySelector('[data-icon-input]'),
       iconPreview: el.querySelector('[data-icon-preview]'),
+      templateSelect: el.querySelector('[data-template-select]'),
+      templateApplyBtn: el.querySelector('[data-template-apply]'),
+      templateClearBtn: el.querySelector('[data-template-clear]'),
     };
+
+    const form = el.closest('form');
+    state.form = form || null;
+    if (form) {
+      state.titleField = form.querySelector('input[name="title"]');
+      state.statusField = form.querySelector('select[name="status"]');
+      state.propertyFields = {
+        project: form.querySelector('input[name="property_project"]'),
+        location: form.querySelector('input[name="property_location"]'),
+        due_date: form.querySelector('input[name="property_due_date"]'),
+        priority: form.querySelector('select[name="property_priority"]'),
+      };
+      if (state.propertyFields && state.propertyFields.priority) {
+        state.defaultPriority = state.propertyFields.priority.value;
+      }
+      if (state.statusField) {
+        state.defaultStatus = state.statusField.value;
+      }
+    }
 
     if (state.toolbar) {
       state.toolbar.addEventListener('click', (event) => {
@@ -386,6 +510,39 @@
       el.closest('form').addEventListener('submit', () => {
         renderBlocks(state);
         renderTags(state);
+      });
+    }
+
+    if (state.templateApplyBtn && state.templateSelect) {
+      state.templateApplyBtn.addEventListener('click', () => {
+        const selected = state.templateSelect.value;
+        if (!selected) {
+          return;
+        }
+        const template = state.templates.find((tpl) => String(tpl.id) === selected);
+        applyTemplate(state, template);
+      });
+    }
+
+    if (state.templateClearBtn) {
+      state.templateClearBtn.addEventListener('click', () => {
+        if (state.templateSelect) {
+          state.templateSelect.value = '';
+        }
+        resetToBlank(state);
+      });
+    }
+
+    if (state.templateSelect) {
+      state.templateSelect.addEventListener('change', () => {
+        const selected = state.templateSelect.value;
+        if (!selected) {
+          return;
+        }
+        const template = state.templates.find((tpl) => String(tpl.id) === selected);
+        if (template) {
+          applyTemplate(state, template);
+        }
       });
     }
 

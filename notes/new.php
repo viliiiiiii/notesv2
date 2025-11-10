@@ -3,6 +3,8 @@ declare(strict_types=1);
 require_once __DIR__ . '/lib.php';
 require_login();
 
+$me        = current_user();
+$meId      = (int)($me['id'] ?? 0);
 $errors          = [];
 $today           = date('Y-m-d');
 $statuses        = notes_available_statuses();
@@ -17,6 +19,7 @@ $meta            = [
 $tags            = [];
 $blocks          = [];
 $tagOptions      = notes_all_tag_options();
+$templates       = notes_fetch_templates_for_user($meId);
 
 if (is_post()) {
     if (!verify_csrf_token($_POST[CSRF_TOKEN_NAME] ?? null)) {
@@ -89,10 +92,11 @@ if (is_post()) {
 }
 
 $composerConfig = [
-    'blocks'   => $blocks,
-    'tags'     => $tags,
-    'icon'     => $meta['icon'],
-    'coverUrl' => $meta['cover_url'],
+    'blocks'    => $blocks,
+    'tags'      => $tags,
+    'icon'      => $meta['icon'],
+    'coverUrl'  => $meta['cover_url'],
+    'templates' => $templates,
 ];
 $composerJson = json_encode($composerConfig, JSON_UNESCAPED_UNICODE);
 
@@ -258,7 +262,7 @@ $configAttr = htmlspecialchars($composerJson, ENT_QUOTES, 'UTF-8');
 .note-form{ display:grid; gap:1.5rem; }
 .note-composer{ padding:0; overflow:hidden; }
 
-.note-cover{ position:relative; height:220px; background:linear-gradient(135deg,#e0f2fe,#c7d2fe); border-radius:18px 18px 0 0; background-size:cover; background-position:center; }
+.note-cover{ position:relative; height:180px; background:linear-gradient(135deg,#e0f2fe,#c7d2fe); border-radius:18px 18px 0 0; background-size:cover; background-position:center; }
 .note-cover.has-cover{ background-size:cover; }
 .note-cover__overlay{ position:absolute; inset:0; padding:1rem; display:flex; justify-content:space-between; align-items:flex-end; background:linear-gradient(180deg,rgba(15,23,42,0.05),rgba(15,23,42,0.35)); gap:.75rem; }
 .note-cover__control{ display:flex; flex-direction:column; gap:.35rem; color:#f8fafc; font-size:.9rem; }
@@ -284,6 +288,11 @@ $configAttr = htmlspecialchars($composerJson, ENT_QUOTES, 'UTF-8');
 .note-tag::before{ content:''; width:8px; height:8px; border-radius:50%; background:var(--tag-color,#6366f1); }
 .note-tag__remove{ background:none; border:none; cursor:pointer; color:inherit; font-size:1rem; line-height:1; padding:0; }
 .note-tag-chip{ background:var(--tag-chip,#94a3b8); color:#fff; padding:.25rem .55rem; border-radius:999px; font-size:.75rem; }
+
+.note-template-picker{ padding:1.2rem 1.5rem 0; display:grid; gap:.5rem; }
+.note-template-picker label{ font-size:.85rem; color:#475569; font-weight:600; }
+.note-template-picker__controls{ display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; }
+.note-template-picker__controls select{ padding:.5rem .7rem; border-radius:.6rem; border:1px solid #cbd5f5; background:#fff; min-width:200px; }
 
 .note-properties{ padding:0 1.5rem 1.5rem; display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:1rem; border-top:1px solid #e2e8f0; }
 .note-properties__item label{ display:flex; flex-direction:column; gap:.35rem; font-size:.85rem; color:#475569; }
