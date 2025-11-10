@@ -1,257 +1,472 @@
 <?php
 declare(strict_types=1);
+
 require_once __DIR__ . '/lib.php';
 require_login();
 
-$errors = [];
-$today  = date('Y-m-d');
+$me      = current_user();
+$meId    = (int)($me['id'] ?? 0);
+$templateId = (int)($_GET['template_id'] ?? 0);
+$template   = null;
+
+if ($templateId > 0) {
+    $maybeTemplate = notes_template_fetch($templateId);
+    if ($maybeTemplate && notes_template_is_visible_to_user($maybeTemplate, $meId)) {
+        $template = $maybeTemplate;
+    }
+}
+
+function notes_new_parse_blocks(string $text): array
+{
+    $lines = preg_split('/\r?\n/', $text) ?: [];
+    $blocks = [];
+    $listMode = null;
+    $listItems = [];
+
+    $flushList = static function () use (&$blocks, &$listMode, &$listItems) {
+        if ($listMode && $listItems) {
+            $blocks[] = [
+                'uid'   => notes_generate_block_uid(),
+                'type'  => $listMode,
+                'text'  => '',
+                'items' => $listItems,
+            ];
+        }
+        $listMode = null;
+        $listItems = [];
+    };
+
+    foreach ($lines as $line) {
+        $raw = rtrim((string)$line);
+        $trim = trim($raw);
+        if ($trim === '') {
+            $flushList();
+            continue;
+        }
+        if (preg_match('/^#\s+(.*)$/', $trim, $m)) {
+            $flushList();
+            $blocks[] = ['uid' => notes_generate_block_uid(), 'type' => 'heading1', 'text' => $m[1]];
+        } elseif (preg_match('/^##\s+(.*)$/', $trim, $m)) {
+            $flushList();
+            $blocks[] = ['uid' => notes_generate_block_uid(), 'type' => 'heading2', 'text' => $m[1]];
+        } elseif (preg_match('/^###\s+(.*)$/', $trim, $m)) {
+            $flushList();
+            $blocks[] = ['uid' => notes_generate_block_uid(), 'type' => 'heading3', 'text' => $m[1]];
+        } elseif (preg_match('/^-\s+\[( |x|X)\]\s*(.*)$/', $trim, $m)) {
+            $flushList();
+            $blocks[] = [
+                'uid'     => notes_generate_block_uid(),
+                'type'    => 'todo',
+                'text'    => $m[2],
+                'checked' => strtolower($m[1]) === 'x',
+            ];
+        } elseif (preg_match('/^-\s+(.*)$/', $trim, $m)) {
+            if ($listMode !== 'bulleted') {
+                $flushList();
+                $listMode = 'bulleted';
+            }
+            $listItems[] = $m[1];
+        } elseif (preg_match('/^\d+\.\s+(.*)$/', $trim, $m)) {
+            if ($listMode !== 'numbered') {
+                $flushList();
+                $listMode = 'numbered';
+            }
+            $listItems[] = $m[1];
+        } elseif (preg_match('/^>\s?(.*)$/', $trim, $m)) {
+            $flushList();
+            $blocks[] = ['uid' => notes_generate_block_uid(), 'type' => 'quote', 'text' => $m[1]];
+        } elseif (preg_match('/^!\s+(.*)$/', $trim, $m)) {
+            $flushList();
+            $blocks[] = ['uid' => notes_generate_block_uid(), 'type' => 'callout', 'text' => $m[1], 'icon' => '💡'];
+        } elseif ($trim === '---') {
+            $flushList();
+            $blocks[] = ['uid' => notes_generate_block_uid(), 'type' => 'divider'];
+        } else {
+            $flushList();
+            $blocks[] = ['uid' => notes_generate_block_uid(), 'type' => 'paragraph', 'text' => $raw];
+        }
+    }
+    $flushList();
+
+    return array_values(array_filter($blocks, static function ($block) {
+        if (!is_array($block)) {
+            return false;
+        }
+        $text = trim((string)($block['text'] ?? ''));
+        if (($block['type'] ?? '') === 'divider') {
+            return true;
+        }
+        if (in_array($block['type'] ?? '', ['bulleted','numbered'], true)) {
+            return !empty($block['items']);
+        }
+        if (($block['type'] ?? '') === 'todo') {
+            return $text !== '';
+        }
+        return $text !== '';
+    }));
+}
+
+function notes_new_blocks_to_editor(array $blocks, string $fallback): string
+{
+    if (!$blocks) {
+        return $fallback;
+    }
+    $lines = [];
+    foreach ($blocks as $block) {
+        $type = $block['type'] ?? 'paragraph';
+        $text = (string)($block['text'] ?? '');
+        switch ($type) {
+            case 'heading1':
+                $lines[] = '# ' . $text;
+                break;
+            case 'heading2':
+                $lines[] = '## ' . $text;
+                break;
+            case 'heading3':
+                $lines[] = '### ' . $text;
+                break;
+            case 'todo':
+                $lines[] = '- [' . (!empty($block['checked']) ? 'x' : ' ') . '] ' . $text;
+                break;
+            case 'bulleted':
+                foreach ($block['items'] ?? [] as $item) {
+                    $lines[] = '- ' . $item;
+                }
+                break;
+            case 'numbered':
+                $idx = 0;
+                foreach ($block['items'] ?? [] as $item) {
+                    $idx++;
+                    $lines[] = $idx . '. ' . $item;
+                }
+                break;
+            case 'quote':
+                $lines[] = '> ' . $text;
+                break;
+            case 'callout':
+                $lines[] = '! ' . $text;
+                break;
+            case 'divider':
+                $lines[] = '---';
+                break;
+            default:
+                $lines[] = $text;
+        }
+        $lines[] = '';
+    }
+    return trim(implode("\n", $lines));
+}
 
 if (is_post()) {
     if (!verify_csrf_token($_POST[CSRF_TOKEN_NAME] ?? null)) {
-        $errors[] = 'Invalid CSRF token.';
-    } else {
-        $data = [
-            'user_id'   => (int)(current_user()['id'] ?? 0),
-            'note_date' => (string)($_POST['note_date'] ?? $today),
-            'title'     => trim((string)($_POST['title'] ?? '')),
-            'body'      => trim((string)($_POST['body'] ?? '')),
-        ];
-        if ($data['title'] === '') $errors[] = 'Title is required.';
-        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $data['note_date'])) $errors[] = 'Valid date is required.';
+        redirect_with_message('new.php', 'Security token expired. Please try again.', 'error');
+    }
 
-        if (!$errors) {
-            $id = notes_insert($data);
-            // inline photos best-effort
-            for ($i=1; $i<=3; $i++) {
-                if (!empty($_FILES["photo$i"]['name'])) {
-                    try { notes_save_uploaded_photo($id, $i, "photo$i"); } catch (Throwable $e) {}
-                }
+    $title    = trim((string)($_POST['title'] ?? 'Untitled note'));
+    $noteDate = trim((string)($_POST['note_date'] ?? date('Y-m-d')));
+    $status   = notes_normalize_status($_POST['status'] ?? NOTES_DEFAULT_STATUS);
+    $icon     = trim((string)($_POST['icon'] ?? '')) ?: null;
+    $cover    = trim((string)($_POST['cover_url'] ?? '')) ?: null;
+    $project  = trim((string)($_POST['property_project'] ?? ''));
+    $location = trim((string)($_POST['property_location'] ?? ''));
+    $dueDate  = trim((string)($_POST['property_due_date'] ?? ''));
+    $priority = trim((string)($_POST['property_priority'] ?? 'Medium'));
+    $tagInput = trim((string)($_POST['tags'] ?? ''));
+    $editor   = (string)($_POST['editor_content'] ?? '');
+
+    if ($title === '') {
+        redirect_with_message('new.php', 'Title is required.', 'error');
+    }
+    if ($noteDate === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $noteDate)) {
+        redirect_with_message('new.php', 'Provide a valid date (YYYY-MM-DD).', 'error');
+    }
+    if ($dueDate !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $dueDate)) {
+        redirect_with_message('new.php', 'Due date must follow YYYY-MM-DD.', 'error');
+    }
+
+    $blocks = notes_new_parse_blocks($editor);
+    $plainBody = $blocks ? notes_blocks_to_plaintext($blocks) : trim($editor);
+
+    $properties = notes_normalize_properties([
+        'project'  => $project,
+        'location' => $location,
+        'due_date' => $dueDate,
+        'priority' => $priority,
+    ]);
+
+    $tags = [];
+    if ($tagInput !== '') {
+        $parts = preg_split('/[,;\n]/', $tagInput) ?: [];
+        foreach ($parts as $part) {
+            $label = trim((string)$part);
+            if ($label !== '') {
+                $tags[] = ['label' => $label];
             }
-            redirect_with_message('view.php?id='.$id, 'Note created.', 'success');
         }
     }
-}
 
-$title = 'New Note';
-include __DIR__ . '/../includes/header.php';
-?>
-<section class="card">
-  <div class="card-header">
-    <h1>Create Note</h1>
-    <div class="actions">
-      <a class="btn" href="index.php">Back to Notes</a>
-    </div>
-  </div>
-
-  <?php if ($errors): ?>
-    <div class="flash flash-error"><?= sanitize(implode(' ', $errors)); ?></div>
-  <?php endif; ?>
-
-  <!-- Form: mobile-first; on desktop your grid makes this 2 columns -->
-  <form method="post" enctype="multipart/form-data" class="grid two" novalidate>
-    <label>Date
-      <input type="date" name="note_date" value="<?= sanitize($_POST['note_date'] ?? $today); ?>" required>
-    </label>
-
-    <label>Title
-      <input type="text" name="title" value="<?= sanitize($_POST['title'] ?? ''); ?>" required>
-    </label>
-
-    <label class="field-span-2">Notes
-      <textarea name="body" rows="7" placeholder="Write your note..."><?= sanitize($_POST['body'] ?? ''); ?></textarea>
-    </label>
-
-    <!-- Drag & drop + previews -->
-    <div class="field-span-2">
-      <div id="dropZone"
-           class="dropzone"
-           data-max-mb="<?= (int)NOTES_MAX_MB; ?>"
-           aria-label="Drop images here">
-        <div class="dz-icon" aria-hidden="true">📎</div>
-        <div class="dz-text">
-          <strong>Drag & drop photos</strong> here, or click a slot below to choose.
-          <div class="muted small">JPG/PNG/WebP/HEIC up to <?= (int)NOTES_MAX_MB; ?> MB each.</div>
-        </div>
-      </div>
-
-      <div class="uploader-grid" id="uploaderGrid">
-        <?php for ($i=1; $i<=3; $i++): ?>
-          <div class="uploader-tile" data-slot="<?= $i; ?>">
-            <div class="uploader-thumb" id="preview<?= $i; ?>">
-              <span class="muted small">Photo <?= $i; ?></span>
-            </div>
-            <div class="uploader-actions">
-              <label class="btn small">
-                Choose
-                <input
-                  id="photo<?= $i; ?>"
-                  type="file"
-                  name="photo<?= $i; ?>"
-                  accept="image/*,image/heic,image/heif"
-                  class="visually-hidden file-compact">
-              </label>
-              <button type="button" class="btn small secondary" data-clear="<?= $i; ?>">Clear</button>
-            </div>
-          </div>
-        <?php endfor; ?>
-      </div>
-    </div>
-
-    <input type="hidden" name="<?= CSRF_TOKEN_NAME; ?>" value="<?= csrf_token(); ?>">
-
-    <div class="form-actions field-span-2">
-      <button class="btn primary" type="submit">Create</button>
-      <a class="btn secondary" href="index.php">Cancel</a>
-    </div>
-  </form>
-</section>
-
-<!-- Minimal styles that piggyback on your light theme (safe to keep here or move to app.css) -->
-<style>
-/* Drag & drop area */
-.dropzone{
-  display:flex; align-items:center; gap:.8rem;
-  padding:1rem; margin-bottom:.8rem;
-  border:2px dashed var(--line,#e7ecf3); border-radius:14px; background:#fbfcff;
-}
-.dropzone.is-drag{ background:#f3f7ff; border-color:#b9c7ff; }
-.dropzone .dz-icon{ font-size:1.25rem; }
-.dropzone .dz-text{ line-height:1.35; }
-
-/* Uploader grid */
-.uploader-grid{
-  display:grid; grid-template-columns:1fr; gap:.8rem;
-}
-@media (min-width:720px){ .uploader-grid{ grid-template-columns:repeat(3, 1fr); } }
-
-.uploader-tile{
-  border:1px solid var(--line,#e7ecf3); border-radius:14px; background:#fff;
-  padding:.6rem; display:flex; flex-direction:column; gap:.5rem;
-}
-.uploader-thumb{
-  display:grid; place-items:center;
-  aspect-ratio: 4/3;
-  border-radius:10px; background:#f6f8fd;
-  overflow:hidden; border:1px dashed #e6ebf5;
-}
-.uploader-thumb img{
-  width:100%; height:100%; object-fit:cover; display:block;
-}
-.uploader-actions{ display:flex; gap:.5rem; justify-content:space-between; }
-.visually-hidden{ position:absolute !important; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0; }
-</style>
-
-<script>
-document.addEventListener('DOMContentLoaded', () => {
-  const maxMB = parseInt(document.getElementById('dropZone')?.dataset.maxMb || '70', 10);
-  const maxBytes = maxMB * 1024 * 1024;
-
-  const inputs = [1,2,3].map(i => document.getElementById('photo' + i));
-  const previews = [1,2,3].map(i => document.getElementById('preview' + i));
-  const dropZone = document.getElementById('dropZone');
-
-  function clearSlot(i){
-    const input = inputs[i-1], preview = previews[i-1];
-    if (!input || !preview) return;
     try {
-      // Clear the FileList via a fresh DataTransfer
-      const dt = new DataTransfer();
-      input.files = dt.files;
-    } catch(_) { input.value = ''; }
-    preview.innerHTML = '<span class="muted small">Photo ' + i + '</span>';
-  }
-
-  function showPreview(i, file){
-    const preview = previews[i-1];
-    if (!preview) return;
-    const reader = new FileReader();
-    reader.onload = e => {
-      preview.innerHTML = '';
-      const img = document.createElement('img');
-      img.src = e.target.result;
-      img.alt = 'Preview ' + i;
-      preview.appendChild(img);
-    };
-    reader.readAsDataURL(file);
-  }
-
-  function setFileToInput(input, file){
-    if (!file) return false;
-    if (file.size > maxBytes) {
-      alert('File "'+ file.name +'" is too large. Max ' + maxMB + 'MB.');
-      return false;
+        $noteId = notes_insert([
+            'user_id'    => $meId,
+            'note_date'  => $noteDate,
+            'title'      => $title,
+            'body'       => $plainBody,
+            'icon'       => $icon,
+            'cover_url'  => $cover,
+            'status'     => $status,
+            'properties' => $properties,
+            'tags'       => notes_normalize_tags_input($tags),
+            'blocks'     => $blocks,
+        ]);
+        redirect_with_message('edit.php?id=' . $noteId, 'Note created.', 'success');
+    } catch (Throwable $e) {
+        error_log('notes: create failed: ' . $e->getMessage());
+        redirect_with_message('new.php', 'Unable to create note.', 'error');
     }
-    const dt = new DataTransfer();
-    dt.items.add(file);
-    input.files = dt.files;
-    return true;
-  }
+}
 
-  function firstEmptyInputIdx(){
-    for (let i=0;i<inputs.length;i++){
-      if (!inputs[i].files || inputs[i].files.length === 0) return i;
-    }
-    return -1;
-  }
+$initial = [
+    'title'      => $template['title'] ?? '',
+    'note_date'  => date('Y-m-d'),
+    'status'     => $template['status'] ?? NOTES_DEFAULT_STATUS,
+    'icon'       => $template['icon'] ?? '',
+    'cover_url'  => $template['coverUrl'] ?? '',
+    'properties' => $template['properties'] ?? notes_default_properties(),
+    'tags'       => $template['tags'] ?? [],
+    'blocks'     => $template['blocks'] ?? [],
+];
 
-  // Choose: file input change → preview
-  inputs.forEach((input, idx) => {
-    if (!input) return;
-    input.addEventListener('change', () => {
-      const file = input.files && input.files[0];
-      if (!file) { clearSlot(idx+1); return; }
-      if (file.size > maxBytes) {
-        alert('File "'+ file.name +'" is too large. Max ' + maxMB + 'MB.');
-        clearSlot(idx+1);
-        return;
-      }
-      showPreview(idx+1, file);
-    });
-  });
+$bodyText = '';
+$editorContent = notes_new_blocks_to_editor($initial['blocks'], $bodyText);
+$tagInputValue = implode(', ', array_map(static function ($tag) {
+    return (string)($tag['label'] ?? '');
+}, $initial['tags']));
 
-  // Clear buttons
-  document.querySelectorAll('[data-clear]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const i = parseInt(btn.getAttribute('data-clear'), 10);
-      clearSlot(i);
-    });
-  });
-
-  // DropZone UX
-  if (dropZone){
-    const on = () => dropZone.classList.add('is-drag');
-    const off = () => dropZone.classList.remove('is-drag');
-
-    ['dragenter','dragover'].forEach(ev =>
-      dropZone.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); on(); })
-    );
-    ['dragleave','dragend','drop'].forEach(ev =>
-      dropZone.addEventListener(ev, e => { if (ev !== 'drop'){ off(); } })
-    );
-
-    dropZone.addEventListener('drop', (e) => {
-      e.preventDefault(); e.stopPropagation(); off();
-      const files = Array.from(e.dataTransfer?.files || []).filter(f => f.type.startsWith('image/') || /\.(heic|heif)$/i.test(f.name));
-      if (!files.length) return;
-
-      let cursor = firstEmptyInputIdx();
-      for (const file of files){
-        if (cursor === -1) break;
-        const input = inputs[cursor];
-        if (setFileToInput(input, file)) {
-          showPreview(cursor+1, file);
-          cursor = firstEmptyInputIdx();
+$statuses  = notes_available_statuses();
+$templates = notes_fetch_templates_for_user($meId);
+$csrfToken = csrf_token();
+?>
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>New note</title>
+    <style>
+        :root {
+            color-scheme: only light;
+            --notes-bg: #f8fafc;
+            --notes-surface: #ffffff;
+            --notes-border: #dfe3ec;
+            --notes-text: #0f172a;
+            --notes-muted: #6b7280;
+            --notes-accent: #2563eb;
+            --notes-radius: 18px;
+            font-family: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
         }
-      }
-    });
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            background: var(--notes-bg);
+            min-height: 100vh;
+            color: var(--notes-text);
+        }
+        a { color: inherit; text-decoration: none; }
+        .new-shell {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 32px 24px 80px;
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 16px;
+        }
+        .button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            border-radius: 999px;
+            border: 1px solid transparent;
+            padding: 10px 18px;
+            font-weight: 600;
+            cursor: pointer;
+            background: var(--notes-accent);
+            color: #fff;
+        }
+        .button--ghost {
+            background: transparent;
+            color: var(--notes-accent);
+            border-color: rgba(37, 99, 235, 0.3);
+        }
+        .panel {
+            background: var(--notes-surface);
+            border-radius: var(--notes-radius);
+            border: 1px solid var(--notes-border);
+            padding: 24px 28px;
+            display: flex;
+            flex-direction: column;
+            gap: 18px;
+        }
+        .panel h2 { margin: 0; font-size: 1.3rem; }
+        .grid-two {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+            gap: 18px;
+        }
+        .field { display:flex; flex-direction:column; gap:6px; }
+        .field label { font-size:0.85rem; font-weight:600; color:var(--notes-muted); }
+        .field input,
+        .field textarea,
+        .field select {
+            border-radius: 12px;
+            border: 1px solid var(--notes-border);
+            background: var(--notes-surface);
+            padding: 12px 14px;
+            font-size: 0.95rem;
+        }
+        .editor textarea {
+            width: 100%;
+            min-height: 280px;
+            font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, monospace;
+            line-height: 1.6;
+            border-radius: 18px;
+            border: 1px solid var(--notes-border);
+            padding: 18px;
+            resize: vertical;
+        }
+        .template-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            gap: 12px;
+        }
+        .template-card {
+            border: 1px solid var(--notes-border);
+            border-radius: 14px;
+            padding: 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            background: rgba(37, 99, 235, 0.04);
+        }
+        .template-card__name { font-weight: 600; }
+        .template-card__meta { font-size: 0.75rem; color: var(--notes-muted); }
+        .flash {
+            padding: 12px 16px;
+            border-radius: 12px;
+            background: rgba(37, 99, 235, 0.12);
+            color: var(--notes-accent);
+        }
+        .flash-error { background: rgba(220, 38, 38, 0.16); color: #b91c1c; }
+    </style>
+</head>
+<body>
+<div class="new-shell">
+    <div class="header">
+        <a class="button button--ghost" href="index.php">← Back to notes</a>
+        <span style="color:var(--notes-muted);font-size:0.9rem;">Signed in as <?= htmlspecialchars((string)($me['email'] ?? ''), ENT_QUOTES, 'UTF-8') ?></span>
+    </div>
 
-    // Click dropzone → open first empty slot, else #1
-    dropZone.addEventListener('click', () => {
-      const idx = Math.max(0, firstEmptyInputIdx());
-      inputs[idx]?.click();
-    });
-  }
-});
-</script>
+    <?php flash_message(); ?>
 
-<?php include __DIR__ . '/../includes/footer.php';
+    <section class="panel">
+        <h2>Create note</h2>
+        <form method="post">
+            <input type="hidden" name="<?= CSRF_TOKEN_NAME ?>" value="<?= $csrfToken ?>">
+            <div class="grid-two">
+                <div class="field">
+                    <label for="title">Title</label>
+                    <input id="title" name="title" type="text" value="<?= htmlspecialchars($initial['title'], ENT_QUOTES, 'UTF-8') ?>" placeholder="Project kickoff" required>
+                </div>
+                <div class="field">
+                    <label for="note_date">Date</label>
+                    <input id="note_date" name="note_date" type="date" value="<?= htmlspecialchars($initial['note_date'], ENT_QUOTES, 'UTF-8') ?>" required>
+                </div>
+                <div class="field">
+                    <label for="status">Status</label>
+                    <select id="status" name="status">
+                        <?php foreach ($statuses as $key => $label): ?>
+                            <option value="<?= htmlspecialchars($key, ENT_QUOTES, 'UTF-8') ?>" <?= $initial['status'] === $key ? 'selected' : '' ?>><?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8') ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="field">
+                    <label for="icon">Icon</label>
+                    <input id="icon" name="icon" type="text" value="<?= htmlspecialchars((string)$initial['icon'], ENT_QUOTES, 'UTF-8') ?>" placeholder="🧠">
+                </div>
+                <div class="field">
+                    <label for="cover_url">Cover image URL</label>
+                    <input id="cover_url" name="cover_url" type="url" value="<?= htmlspecialchars((string)$initial['cover_url'], ENT_QUOTES, 'UTF-8') ?>" placeholder="https://...">
+                </div>
+            </div>
+            <div class="grid-two">
+                <div class="field">
+                    <label for="property_project">Project</label>
+                    <input id="property_project" name="property_project" type="text" value="<?= htmlspecialchars((string)$initial['properties']['project'], ENT_QUOTES, 'UTF-8') ?>">
+                </div>
+                <div class="field">
+                    <label for="property_location">Location</label>
+                    <input id="property_location" name="property_location" type="text" value="<?= htmlspecialchars((string)$initial['properties']['location'], ENT_QUOTES, 'UTF-8') ?>">
+                </div>
+                <div class="field">
+                    <label for="property_due_date">Due date</label>
+                    <input id="property_due_date" name="property_due_date" type="date" value="<?= htmlspecialchars((string)$initial['properties']['due_date'], ENT_QUOTES, 'UTF-8') ?>">
+                </div>
+                <div class="field">
+                    <label for="property_priority">Priority</label>
+                    <select id="property_priority" name="property_priority">
+                        <?php foreach (notes_priority_options() as $option): ?>
+                            <option value="<?= htmlspecialchars($option, ENT_QUOTES, 'UTF-8') ?>" <?= $initial['properties']['priority'] === $option ? 'selected' : '' ?>><?= htmlspecialchars($option, ENT_QUOTES, 'UTF-8') ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+            </div>
+            <div class="field">
+                <label for="tags">Tags</label>
+                <input id="tags" name="tags" type="text" value="<?= htmlspecialchars($tagInputValue, ENT_QUOTES, 'UTF-8') ?>" placeholder="docs, sprint">
+                <span style="font-size:0.8rem;color:var(--notes-muted);">Separate tags with commas.</span>
+            </div>
+            <div class="field editor">
+                <label for="editor_content">Content</label>
+                <textarea id="editor_content" name="editor_content" spellcheck="false" placeholder="# Meeting notes
+- [ ] Agenda item
+Summary paragraphs here.
+---
+> Key insight
+"><?= htmlspecialchars($editorContent, ENT_QUOTES, 'UTF-8') ?></textarea>
+            </div>
+            <div style="display:flex;justify-content:flex-end;">
+                <button type="submit" class="button">Create note</button>
+            </div>
+        </form>
+    </section>
+
+    <section class="panel">
+        <h2>Templates</h2>
+        <?php if (!$templates): ?>
+            <p style="margin:0;color:var(--notes-muted);">No templates yet. Save a note as a template to reuse structure.</p>
+        <?php else: ?>
+            <div class="template-list">
+                <?php foreach ($templates as $tpl):
+                    $tplId = (int)($tpl['id'] ?? 0);
+                    $tplName = htmlspecialchars((string)($tpl['name'] ?? ''), ENT_QUOTES, 'UTF-8');
+                    $ownerLabel = notes_user_label((int)($tpl['owner_id'] ?? 0));
+                    $ownerHtml  = htmlspecialchars($ownerLabel, ENT_QUOTES, 'UTF-8');
+                    ?>
+                    <div class="template-card">
+                        <div class="template-card__name"><?= $tplName ?></div>
+                        <div class="template-card__meta"><?= $tpl['is_owner'] ? 'You own this template' : ('Shared by ' . $ownerHtml) ?></div>
+                        <a class="button button--ghost" href="new.php?template_id=<?= $tplId ?>">Apply</a>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
+    </section>
+</div>
+</body>
+</html>
