@@ -262,10 +262,10 @@ if ($hasShares && $simNoteId > 0 && $shareCol) {
     <h2>Environment</h2>
     <table>
       <tbody>
-        <tr><th>PHP</th><td><?= h(PHP_VERSION) ?></td></tr>
-        <tr><th>Loaded php.ini</th><td><?= h(php_ini_loaded_file() ?: '(unknown)') ?></td></tr>
-        <tr><th>Current DB</th><td><?= h($db ?: '(unknown)') ?></td></tr>
-        <tr><th>Note tables present</th><td><?= h(implode(', ', $tables) ?: '(none)') ?></td></tr>
+        <tr><th>PHP</th><td><?php echo  h(PHP_VERSION) ?></td></tr>
+        <tr><th>Loaded php.ini</th><td><?php echo  h(php_ini_loaded_file() ?: '(unknown)') ?></td></tr>
+        <tr><th>Current DB</th><td><?php echo  h($db ?: '(unknown)') ?></td></tr>
+        <tr><th>Note tables present</th><td><?php echo  h(implode(', ', $tables) ?: '(none)') ?></td></tr>
       </tbody>
     </table>
   </section>
@@ -274,14 +274,14 @@ if ($hasShares && $simNoteId > 0 && $shareCol) {
     <h2>Schema checks (information_schema)</h2>
     <table>
       <tbody>
-        <tr><th>notes</th><td><?= $hasNotes ? 'YES' : 'NO' ?></td></tr>
-        <tr><th>note_photos</th><td><?= $hasPhotos ? 'YES' : 'NO' ?></td></tr>
-        <tr><th>notes_shares</th><td><?= $hasShares ? 'YES' : 'NO' ?></td></tr>
-        <tr><th>notes.note_date</th><td><?= $hasNoteDate ? 'YES' : 'NO' ?></td></tr>
-        <tr><th>notes.created_at</th><td><?= $hasCreatedAt ? 'YES' : 'NO' ?></td></tr>
-        <tr><th>notes_shares.user_id</th><td><?= $sharesUserId ? 'YES' : 'NO' ?></td></tr>
-        <tr><th>notes_shares.shared_with</th><td><?= $sharesSharedWith ? 'YES' : 'NO' ?></td></tr>
-        <tr><th>Sharing column detected</th><td><b><?= h($shareCol ?: '(none)') ?></b></td></tr>
+        <tr><th>notes</th><td><?php echo  $hasNotes ? 'YES' : 'NO' ?></td></tr>
+        <tr><th>note_photos</th><td><?php echo  $hasPhotos ? 'YES' : 'NO' ?></td></tr>
+        <tr><th>notes_shares</th><td><?php echo  $hasShares ? 'YES' : 'NO' ?></td></tr>
+        <tr><th>notes.note_date</th><td><?php echo  $hasNoteDate ? 'YES' : 'NO' ?></td></tr>
+        <tr><th>notes.created_at</th><td><?php echo  $hasCreatedAt ? 'YES' : 'NO' ?></td></tr>
+        <tr><th>notes_shares.user_id</th><td><?php echo  $sharesUserId ? 'YES' : 'NO' ?></td></tr>
+        <tr><th>notes_shares.shared_with</th><td><?php echo  $sharesSharedWith ? 'YES' : 'NO' ?></td></tr>
+        <tr><th>Sharing column detected</th><td><b><?php echo  h($shareCol ?: '(none)') ?></b></td></tr>
       </tbody>
     </table>
 
@@ -289,30 +289,30 @@ if ($hasShares && $simNoteId > 0 && $shareCol) {
     <ul>
       <li><code>SELECT id,user_id,title FROM notes …</code>:
         <?php if ($probe_notes['ok']): ?>
-          OK <?= $probe_notes['row'] ? '(row exists)' : '(empty)' ?>
+          OK <?php echo  $probe_notes['row'] ? '(row exists)' : '(empty)' ?>
         <?php else: ?>
-          <span class="flash flash-error"><?= h($probe_notes['error']) ?></span>
+          <span class="flash flash-error"><?php echo  h($probe_notes['error']) ?></span>
         <?php endif; ?>
       </li>
       <li><code>SELECT id,note_id,position FROM note_photos …</code>:
         <?php if ($probe_note_photos['ok']): ?>
-          OK <?= $probe_note_photos['row'] ? '(row exists)' : '(empty)' ?>
+          OK <?php echo  $probe_note_photos['row'] ? '(row exists)' : '(empty)' ?>
         <?php else: ?>
-          <span class="flash flash-error"><?= h($probe_note_photos['error']) ?></span>
+          <span class="flash flash-error"><?php echo  h($probe_note_photos['error']) ?></span>
         <?php endif; ?>
       </li>
-      <li><code>SELECT id,note_id,<?= h($shareCol ?: 'user_id') ?> FROM notes_shares …</code>:
+      <li><code>SELECT id,note_id,<?php echo  h($shareCol ?: 'user_id') ?> FROM notes_shares …</code>:
         <?php if ($probe_notes_shares['ok']): ?>
-          OK <?= $probe_notes_shares['row'] ? '(row exists)' : '(empty)' ?>
+          OK <?php echo  $probe_notes_shares['row'] ? '(row exists)' : '(empty)' ?>
         <?php else: ?>
-          <span class="flash flash-error"><?= h($probe_notes_shares['error']) ?></span>
+          <span class="flash flash-error"><?php echo  h($probe_notes_shares['error']) ?></span>
         <?php endif; ?>
       </li>
     </ul>
   </section>
 
   <?php if ($flash): ?>
-    <div class="flash <?= str_starts_with($flash, 'ERROR:') ? 'flash-error' : 'flash-ok' ?>"><?= h($flash) ?></div>
+    <div class="flash <?php echo  str_starts_with($flash, 'ERROR:') ? 'flash-error' : 'flash-ok' ?>"><?php echo  h($flash) ?></div>
   <?php endif; ?>
 
   <div class="grid">
@@ -323,21 +323,21 @@ if ($hasShares && $simNoteId > 0 && $shareCol) {
         <label>User
           <select name="user">
             <?php foreach ($userOpts as $u): ?>
-              <option value="<?= (int)$u['id'] ?>" <?= (int)$u['id'] === $simUserId ? 'selected' : '' ?>>
-                <?= h($u['email'] ?? ('#'.$u['id'])) ?> (ID <?= (int)$u['id'] ?>)
+              <option value="<?php echo  (int)$u['id'] ?>" <?php echo  (int)$u['id'] === $simUserId ? 'selected' : '' ?>>
+                <?php echo  h($u['email'] ?? ('#'.$u['id'])) ?> (ID <?php echo  (int)$u['id'] ?>)
               </option>
             <?php endforeach; ?>
           </select>
         </label>
         <label>Note (optional)
-          <input type="number" name="note" value="<?= $simNoteId ?: '' ?>" placeholder="e.g. 3">
+          <input type="number" name="note" value="<?php echo  $simNoteId ?: '' ?>" placeholder="e.g. 3">
         </label>
         <label>Text filter
-          <input type="text" name="q" value="<?= h($txt) ?>" placeholder="title/body contains…">
+          <input type="text" name="q" value="<?php echo  h($txt) ?>" placeholder="title/body contains…">
         </label>
         <div style="display:flex;gap:.5rem">
-          <label style="flex:1">From <input type="date" name="from" value="<?= h($from) ?>" <?= $hasNoteDate ? '' : 'disabled' ?>></label>
-          <label style="flex:1">To <input type="date" name="to" value="<?= h($to) ?>" <?= $hasNoteDate ? '' : 'disabled' ?>></label>
+          <label style="flex:1">From <input type="date" name="from" value="<?php echo  h($from) ?>" <?php echo  $hasNoteDate ? '' : 'disabled' ?>></label>
+          <label style="flex:1">To <input type="date" name="to" value="<?php echo  h($to) ?>" <?php echo  $hasNoteDate ? '' : 'disabled' ?>></label>
         </div>
         <button type="submit">Run</button>
       </form>
@@ -345,7 +345,7 @@ if ($hasShares && $simNoteId > 0 && $shareCol) {
       <?php if (!$hasNotes): ?>
         <p class="flash flash-error">Table <code>notes</code> is missing.</p>
       <?php elseif ($visErr): ?>
-        <p class="flash flash-error"><?= h($visErr) ?></p>
+        <p class="flash flash-error"><?php echo  h($visErr) ?></p>
       <?php else: ?>
         <?php if (!$visRows): ?>
           <p class="muted">No visible notes for this user with current filters.</p>
@@ -355,12 +355,12 @@ if ($hasShares && $simNoteId > 0 && $shareCol) {
             <tbody>
               <?php foreach ($visRows as $r): ?>
                 <tr>
-                  <td><?= (int)$r['id'] ?></td>
-                  <td><?= (int)$r['user_id'] ?></td>
-                  <td><?= h($r['title']) ?></td>
-                  <td><?= !empty($r['is_owner']) ? '1' : '0' ?></td>
-                  <td><?= !empty($r['is_shared']) ? '1' : '0' ?></td>
-                  <td><?= h($r['note_date'] ?? substr((string)($r['created_at'] ?? ''),0,10)) ?></td>
+                  <td><?php echo  (int)$r['id'] ?></td>
+                  <td><?php echo  (int)$r['user_id'] ?></td>
+                  <td><?php echo  h($r['title']) ?></td>
+                  <td><?php echo  !empty($r['is_owner']) ? '1' : '0' ?></td>
+                  <td><?php echo  !empty($r['is_shared']) ? '1' : '0' ?></td>
+                  <td><?php echo  h($r['note_date'] ?? substr((string)($r['created_at'] ?? ''),0,10)) ?></td>
                 </tr>
               <?php endforeach; ?>
             </tbody>
@@ -373,16 +373,16 @@ if ($hasShares && $simNoteId > 0 && $shareCol) {
       <h2>Share Emulator</h2>
 
       <form method="post" class="card" style="margin:0 0 .5rem">
-        <input type="hidden" name="<?= CSRF_TOKEN_NAME ?>" value="<?= csrf_token() ?>">
+        <input type="hidden" name="<?php echo  CSRF_TOKEN_NAME ?>" value="<?php echo  csrf_token() ?>">
         <input type="hidden" name="do" value="share_insert">
         <label>note_id
-          <input type="number" name="note_id" value="<?= $simNoteId ?: '' ?>" placeholder="e.g. 3" required>
+          <input type="number" name="note_id" value="<?php echo  $simNoteId ?: '' ?>" placeholder="e.g. 3" required>
         </label>
         <label>user_id (the person who should see it)
           <select name="user_id" required>
             <option value="">Select…</option>
             <?php foreach ($userOpts as $u): ?>
-              <option value="<?= (int)$u['id'] ?>"><?= h($u['email'] ?? ('#'.$u['id'])) ?> (ID <?= (int)$u['id'] ?>)</option>
+              <option value="<?php echo  (int)$u['id'] ?>"><?php echo  h($u['email'] ?? ('#'.$u['id'])) ?> (ID <?php echo  (int)$u['id'] ?>)</option>
             <?php endforeach; ?>
           </select>
         </label>
@@ -392,16 +392,16 @@ if ($hasShares && $simNoteId > 0 && $shareCol) {
       </form>
 
       <form method="post" class="card" style="margin:0">
-        <input type="hidden" name="<?= CSRF_TOKEN_NAME ?>" value="<?= csrf_token() ?>">
+        <input type="hidden" name="<?php echo  CSRF_TOKEN_NAME ?>" value="<?php echo  csrf_token() ?>">
         <input type="hidden" name="do" value="share_delete">
         <label>note_id
-          <input type="number" name="note_id" value="<?= $simNoteId ?: '' ?>" placeholder="e.g. 3" required>
+          <input type="number" name="note_id" value="<?php echo  $simNoteId ?: '' ?>" placeholder="e.g. 3" required>
         </label>
         <label>user_id
           <select name="user_id" required>
             <option value="">Select…</option>
             <?php foreach ($userOpts as $u): ?>
-              <option value="<?= (int)$u['id'] ?>"><?= h($u['email'] ?? ('#'.$u['id'])) ?> (ID <?= (int)$u['id'] ?>)</option>
+              <option value="<?php echo  (int)$u['id'] ?>"><?php echo  h($u['email'] ?? ('#'.$u['id'])) ?> (ID <?php echo  (int)$u['id'] ?>)</option>
             <?php endforeach; ?>
           </select>
         </label>
@@ -412,26 +412,26 @@ if ($hasShares && $simNoteId > 0 && $shareCol) {
         <h3 style="margin-top:1rem">Note details</h3>
         <table>
           <tbody>
-            <tr><th>id</th><td><?= (int)$noteDetails['id'] ?></td></tr>
-            <tr><th>user_id (owner)</th><td><?= (int)$noteDetails['user_id'] ?></td></tr>
-            <tr><th>title</th><td><?= h($noteDetails['title']) ?></td></tr>
-            <tr><th>note_date</th><td><?= h($noteDetails['note_date'] ?? '') ?></td></tr>
-            <tr><th>created_at</th><td><?= h($noteDetails['created_at'] ?? '') ?></td></tr>
+            <tr><th>id</th><td><?php echo  (int)$noteDetails['id'] ?></td></tr>
+            <tr><th>user_id (owner)</th><td><?php echo  (int)$noteDetails['user_id'] ?></td></tr>
+            <tr><th>title</th><td><?php echo  h($noteDetails['title']) ?></td></tr>
+            <tr><th>note_date</th><td><?php echo  h($noteDetails['note_date'] ?? '') ?></td></tr>
+            <tr><th>created_at</th><td><?php echo  h($noteDetails['created_at'] ?? '') ?></td></tr>
           </tbody>
         </table>
-        <h3>Shares for note #<?= (int)$noteDetails['id'] ?></h3>
+        <h3>Shares for note #<?php echo  (int)$noteDetails['id'] ?></h3>
         <?php if (!$sharesForNote): ?>
           <p class="muted">This note is not shared with anyone (or shares table empty).</p>
         <?php else: ?>
           <table>
-            <thead><tr><th>id</th><th>note_id</th><th><?= h($shareCol ?: 'user_id') ?></th><th>created_at</th></tr></thead>
+            <thead><tr><th>id</th><th>note_id</th><th><?php echo  h($shareCol ?: 'user_id') ?></th><th>created_at</th></tr></thead>
             <tbody>
               <?php foreach ($sharesForNote as $s): ?>
                 <tr>
-                  <td><?= (int)$s['id'] ?></td>
-                  <td><?= (int)$s['note_id'] ?></td>
-                  <td><?= (int)$s['user_id'] ?></td>
-                  <td><?= h($s['created_at']) ?></td>
+                  <td><?php echo  (int)$s['id'] ?></td>
+                  <td><?php echo  (int)$s['note_id'] ?></td>
+                  <td><?php echo  (int)$s['user_id'] ?></td>
+                  <td><?php echo  h($s['created_at']) ?></td>
                 </tr>
               <?php endforeach; ?>
             </tbody>
