@@ -11,8 +11,11 @@ if (!$note || !notes_can_view($note)) {
     exit;
 }
 
+$ownerId         = (int)($note['user_id'] ?? 0);
 $canEdit         = notes_can_edit($note);
+$canShare        = notes_can_share($note);
 $photos          = notes_fetch_photos($id);
+$currentShareIds = $canShare ? array_map('intval', notes_get_share_user_ids($id) ?: []) : [];
 $shareDetails    = notes_get_share_details($id);
 $commentsEnabled = notes_comments_table_exists();
 $commentThreads  = $commentsEnabled ? notes_fetch_comment_threads($id) : [];
@@ -20,6 +23,28 @@ $commentCount    = $commentsEnabled ? notes_comment_count($id) : 0;
 $meta            = notes_fetch_page_meta($id);
 $tags            = notes_fetch_note_tags($id);
 $blocks          = notes_fetch_blocks($id);
+
+$shareOptions = [];
+if ($canShare) {
+    $users = notes_all_users();
+    $seen  = [];
+    foreach ($users as $user) {
+        $uid = (int)($user['id'] ?? 0);
+        if ($uid <= 0 || isset($seen[$uid])) {
+            continue;
+        }
+        $label = trim((string)($user['email'] ?? ''));
+        if ($label === '') {
+            $label = 'User #' . $uid;
+        }
+        $shareOptions[] = [
+            'id'       => $uid,
+            'label'    => $label,
+            'is_owner' => $uid === $ownerId,
+        ];
+        $seen[$uid] = true;
+    }
+}
 
 if (!$blocks) {
     $fallbackBody = trim((string)($note['body'] ?? ''));
@@ -89,6 +114,37 @@ if (is_post()) {
     if (!verify_csrf_token($_POST[CSRF_TOKEN_NAME] ?? null)) {
         $errors[] = 'Invalid CSRF token.';
     } else {
+        if ($canShare && isset($_POST['update_shares'])) {
+            $selected = array_map('intval', (array)($_POST['shared_ids'] ?? []));
+            try {
+                $result = notes_apply_shares($id, $selected, $note, true);
+                $currentShareIds = $result['after'];
+                $shareDetails    = notes_get_share_details($id);
+                if ($isAjax) {
+                    header('Content-Type: application/json');
+                    echo json_encode([
+                        'ok'       => true,
+                        'shares'   => $shareDetails,
+                        'selected' => $currentShareIds,
+                    ], JSON_UNESCAPED_UNICODE);
+                    exit;
+                }
+                redirect_with_message('view.php?id=' . $id, 'Sharing updated.', 'success');
+            } catch (Throwable $e) {
+                error_log('notes_apply_shares failed: ' . $e->getMessage());
+                if ($isAjax) {
+                    header('Content-Type: application/json', true, 500);
+                    echo json_encode([
+                        'ok'      => false,
+                        'message' => 'Failed to update shares.',
+                    ], JSON_UNESCAPED_UNICODE);
+                    exit;
+                }
+                $currentShareIds = $selected;
+                $errors[] = 'Failed to update shares.';
+            }
+        }
+
         if (isset($_POST['add_comment']) && $commentsEnabled) {
             $body     = trim((string)($_POST['body'] ?? ''));
             $parentId = isset($_POST['parent_id']) ? (int)$_POST['parent_id'] : null;
@@ -147,6 +203,12 @@ if ($commentsEnabled) {
     }
 }
 
+$shareConfig = $canShare ? [
+    'selected' => $currentShareIds,
+    'owner'    => $ownerId,
+    'options'  => $shareOptions,
+] : null;
+
 $properties       = $meta['properties'] ?? notes_default_properties();
 $propertyLabels   = notes_property_labels();
 $statusSlug       = $meta['status'] ?? NOTES_DEFAULT_STATUS;
@@ -180,9 +242,12 @@ if ($ownerId > 0) {
 
 $csrfToken = csrf_token();
 $title     = 'View Note';
+$shareConfigAttr = $shareConfig
+    ? htmlspecialchars(json_encode($shareConfig, JSON_UNESCAPED_UNICODE), ENT_QUOTES, 'UTF-8')
+    : '';
 include __DIR__ . '/../includes/header.php';
 ?>
-<section class="note-page note-page--view" data-note-page data-note-id="<?= (int)$id; ?>" data-csrf="<?= sanitize($csrfToken); ?>">
+<section class="note-page note-page--view" data-note-page data-note-id="<?= (int)$id; ?>" data-csrf="<?= sanitize($csrfToken); ?>" data-can-share="<?= $canShare ? '1' : '0'; ?>" data-share-config="<?= $shareConfigAttr; ?>">
   <header class="note-hero<?= $meta['cover_url'] ? ' has-cover' : ''; ?>">
     <div class="note-hero__cover"<?= $meta['cover_url'] ? ' style="background-image:url(' . sanitize($meta['cover_url']) . ');"' : ''; ?>></div>
     <div class="note-hero__inner">
@@ -199,11 +264,11 @@ include __DIR__ . '/../includes/header.php';
               <?php if ($commentCount): ?>
                 <span class="note-meta__chip">💬 <?= (int)$commentCount; ?></span>
               <?php endif; ?>
-              <?php if (!empty($shareDetails)): ?>
+              <span class="note-meta__shares" data-share-list>
                 <?php foreach ($shareDetails as $share): ?>
                   <span class="badge badge--muted"><?= sanitize($share['label']); ?></span>
                 <?php endforeach; ?>
-              <?php endif; ?>
+              </span>
             </div>
             <?php if ($tags): ?>
               <div class="note-tags">
@@ -218,6 +283,9 @@ include __DIR__ . '/../includes/header.php';
         </div>
         <div class="note-hero__actions">
           <a class="btn" href="index.php">Back to notes</a>
+          <?php if ($canShare): ?>
+            <button class="btn secondary" type="button" data-share-open>Share</button>
+          <?php endif; ?>
           <?php if ($canEdit): ?>
             <a class="btn primary" href="edit.php?id=<?= (int)$note['id']; ?>">Edit note</a>
           <?php endif; ?>
@@ -347,13 +415,13 @@ include __DIR__ . '/../includes/header.php';
           </div>
           <div class="note-detail-row">
             <span class="note-detail-label">Shared with</span>
-            <div class="note-detail-value">
+            <div class="note-detail-value" data-share-summary data-empty-text="Private">
               <?php if ($shareDetails): ?>
                 <?php foreach ($shareDetails as $share): ?>
                   <span class="badge badge--muted"><?= sanitize($share['label']); ?></span>
                 <?php endforeach; ?>
               <?php else: ?>
-                <span class="muted">Private</span>
+                <span class="muted" data-share-empty>Private</span>
               <?php endif; ?>
             </div>
           </div>
@@ -468,142 +536,279 @@ include __DIR__ . '/../includes/header.php';
   </div>
 </div>
 
+<?php if ($canShare): ?>
+<div id="noteShareModal" class="share-modal hidden" aria-hidden="true">
+  <div class="share-modal__overlay" data-share-close></div>
+  <div class="share-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="noteShareTitle">
+    <header class="share-modal__header">
+      <div>
+        <h3 id="noteShareTitle">Share this note</h3>
+        <p class="share-modal__hint">Choose teammates who should have access to this page.</p>
+      </div>
+      <button class="close-btn" type="button" title="Close" data-share-close>&times;</button>
+    </header>
+    <form method="post" id="noteShareForm" class="share-modal__form">
+      <input type="hidden" name="<?= CSRF_TOKEN_NAME; ?>" value="<?= sanitize($csrfToken); ?>">
+      <input type="hidden" name="update_shares" value="1">
+      <div class="share-modal__body">
+        <label class="share-modal__search">
+          <span class="visually-hidden">Search teammates</span>
+          <input type="search" id="noteShareSearch" placeholder="Search teammates…" autocomplete="off">
+        </label>
+        <div class="share-modal__list" id="noteShareOptions">
+          <?php if ($shareOptions): ?>
+            <?php foreach ($shareOptions as $option):
+              $uid = (int)$option['id'];
+              $label = $option['label'];
+              $checked = in_array($uid, $currentShareIds, true);
+              $isOwner = !empty($option['is_owner']);
+            ?>
+              <label class="share-modal__option" data-share-option data-label="<?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8'); ?>">
+                <input type="checkbox" name="shared_ids[]" value="<?= $uid; ?>" <?= $checked ? 'checked' : ''; ?> <?= $isOwner ? 'disabled' : ''; ?>>
+                <span><?= sanitize($label); ?></span>
+                <?php if ($isOwner): ?><span class="share-modal__badge">Owner</span><?php endif; ?>
+              </label>
+            <?php endforeach; ?>
+          <?php else: ?>
+            <p class="share-modal__empty">No teammates found. Add users to share this note.</p>
+          <?php endif; ?>
+        </div>
+        <p class="share-modal__empty" id="noteShareEmpty" hidden>No matches.</p>
+      </div>
+      <footer class="share-modal__footer">
+        <div class="share-modal__status" id="noteShareStatus" role="status" aria-live="polite"></div>
+        <button class="btn primary" type="submit">Save access</button>
+      </footer>
+    </form>
+  </div>
+</div>
+<?php endif; ?>
+
 <style>
-.note-page{ display:grid; gap:1.5rem; }
-.note-hero{ position:relative; border-radius:18px; overflow:hidden; background:linear-gradient(135deg,#eef2ff,#e0f2fe); box-shadow:0 20px 45px rgba(15,23,42,.12); }
-.note-hero.has-cover{ background:#0f172a; color:#fff; }
-.note-hero__cover{ position:absolute; inset:0; background-size:cover; background-position:center; opacity:.35; }
-.note-hero__inner{ position:relative; padding:2.5rem; display:flex; flex-direction:column; gap:1rem; }
-.note-hero__top{ display:flex; align-items:flex-start; justify-content:space-between; gap:1.5rem; flex-wrap:wrap; }
-.note-hero__identity{ display:flex; gap:1.25rem; align-items:center; }
-.note-icon{ width:70px; height:70px; border-radius:22px; display:grid; place-items:center; font-size:2rem; background:rgba(255,255,255,.85); box-shadow:0 12px 28px rgba(15,23,42,.18); }
-.note-hero.has-cover .note-icon{ background:rgba(15,23,42,.6); color:#fff; }
-.note-hero h1{ margin:0 0 .5rem; font-size:2rem; line-height:1.2; }
-.note-meta{ display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; font-size:.9rem; }
-.note-meta__date{ color:#1e293b; }
-.note-hero.has-cover .note-meta__date{ color:rgba(255,255,255,.8); }
-.note-meta__chip{ background:rgba(255,255,255,.75); padding:.25rem .6rem; border-radius:999px; font-size:.85rem; }
-.note-hero__actions{ display:flex; gap:.75rem; flex-wrap:wrap; }
-.note-tags{ margin-top:.75rem; display:flex; gap:.5rem; flex-wrap:wrap; }
-.note-tag{ display:inline-flex; align-items:center; gap:.35rem; padding:.35rem .7rem; border-radius:999px; background:rgba(148,163,184,.15); color:#0f172a; font-size:.85rem; position:relative; }
-.note-tag::before{ content:''; width:8px; height:8px; border-radius:50%; background:var(--tag-color,#6366f1); }
+.note-page{ display:grid; gap:1.25rem; padding-bottom:2rem; }
+.note-hero{ position:relative; border-radius:16px; overflow:hidden; background:#fff; border:1px solid #e2e8f0; box-shadow:0 8px 24px rgba(15,23,42,.05); }
+.note-hero.has-cover{ color:#0f172a; }
+.note-hero__cover{ position:absolute; inset:0; background-size:cover; background-position:center; opacity:.18; }
+.note-hero__inner{ position:relative; padding:1.75rem 2rem; display:flex; flex-direction:column; gap:1rem; }
+.note-hero__top{ display:flex; align-items:flex-start; justify-content:space-between; gap:1.25rem; flex-wrap:wrap; }
+.note-hero__identity{ display:flex; gap:1rem; align-items:center; }
+.note-icon{ width:56px; height:56px; border-radius:14px; display:grid; place-items:center; font-size:1.75rem; background:#f1f5f9; border:1px solid #e2e8f0; }
+.note-hero h1{ margin:0; font-size:1.8rem; line-height:1.2; font-weight:600; }
+.note-meta{ display:flex; gap:.4rem; flex-wrap:wrap; align-items:center; font-size:.85rem; color:#475569; }
+.note-meta__date{ color:#475569; }
+.note-meta__chip{ background:#e2e8f0; padding:.2rem .6rem; border-radius:999px; font-size:.8rem; }
+.note-meta__shares{ display:flex; gap:.35rem; flex-wrap:wrap; }
+.note-hero__actions{ display:flex; gap:.5rem; flex-wrap:wrap; }
+.note-tags{ margin-top:.5rem; display:flex; gap:.35rem; flex-wrap:wrap; }
+.note-tag{ display:inline-flex; align-items:center; gap:.25rem; padding:.3rem .6rem; border-radius:999px; background:#f8fafc; color:#1f2937; font-size:.8rem; border:1px solid #e2e8f0; }
+.note-tag::before{ content:''; width:6px; height:6px; border-radius:50%; background:var(--tag-color,#6366f1); }
 
-.note-layout{ display:grid; gap:1.5rem; }
-@media (min-width: 1100px){ .note-layout{ grid-template-columns: minmax(0,1fr) 320px; align-items:start; } }
+.note-layout{ display:grid; gap:1.25rem; }
+@media (min-width: 1100px){ .note-layout{ grid-template-columns: minmax(0,1fr) 300px; align-items:start; } }
 
-.note-content{ padding:2rem; display:grid; gap:1.5rem; }
-.note-blocks{ display:grid; gap:1.5rem; }
-.note-block p{ margin:0; font-size:1.05rem; line-height:1.7; color:#0f172a; }
-.note-block__heading{ margin:0; font-weight:700; color:#0f172a; }
-.note-block__heading--h1{ font-size:2rem; }
-.note-block__heading--h2{ font-size:1.6rem; }
-.note-block__heading--h3{ font-size:1.3rem; }
-.note-block__todo{ display:flex; gap:.75rem; align-items:flex-start; font-size:1.05rem; line-height:1.6; }
-.note-block__todo input{ margin-top:.3rem; width:1.1rem; height:1.1rem; }
-.note-block__list{ margin:0; padding-left:1.5rem; display:grid; gap:.5rem; font-size:1.05rem; line-height:1.6; color:#0f172a; }
-.note-block__quote{ margin:0; padding:1rem 1.5rem; border-left:4px solid #6366f1; background:rgba(99,102,241,.08); border-radius:0 1rem 1rem 0; color:#312e81; font-size:1.05rem; }
-.note-block__callout{ display:flex; gap:1rem; padding:1.25rem; background:rgba(148,163,184,.16); border-radius:1rem; border:1px solid rgba(148,163,184,.35); border-left:6px solid var(--callout-accent,#6366f1); }
-.note-block__callout-icon{ font-size:1.5rem; }
-.note-block__divider{ height:2px; background:linear-gradient(90deg,rgba(148,163,184,.4),rgba(203,213,225,.1)); border-radius:999px; }
+.note-content{ padding:1.75rem; display:grid; gap:1.25rem; background:#fff; border:1px solid #e2e8f0; border-radius:16px; box-shadow:0 6px 18px rgba(15,23,42,.04); }
+.note-blocks{ display:grid; gap:1.25rem; }
+.note-block p{ margin:0; font-size:1rem; line-height:1.6; color:#0f172a; }
+.note-block__heading{ margin:0; font-weight:600; color:#0f172a; }
+.note-block__heading--h1{ font-size:1.7rem; }
+.note-block__heading--h2{ font-size:1.35rem; }
+.note-block__heading--h3{ font-size:1.2rem; }
+.note-block__todo{ display:flex; gap:.6rem; align-items:flex-start; font-size:1rem; line-height:1.55; }
+.note-block__todo input{ margin-top:.2rem; width:1rem; height:1rem; }
+.note-block__list{ margin:0; padding-left:1.25rem; display:grid; gap:.4rem; font-size:1rem; line-height:1.55; color:#0f172a; }
+.note-block__quote{ margin:0; padding:1rem 1.2rem; border-left:3px solid #6366f1; background:#f5f3ff; border-radius:0 .75rem .75rem 0; color:#312e81; font-size:1rem; }
+.note-block__callout{ display:flex; gap:.75rem; padding:1rem; background:#f8fafc; border-radius:12px; border:1px solid #e2e8f0; border-left:4px solid var(--callout-accent,#6366f1); }
+.note-block__callout-icon{ font-size:1.35rem; }
+.note-block__divider{ height:1px; background:#e2e8f0; }
 
 .note-sidebar{ display:grid; gap:1rem; }
-.note-panel{ padding:1.5rem; display:grid; gap:1rem; }
+.note-panel{ padding:1.25rem 1.5rem; display:grid; gap:1rem; background:#fff; border:1px solid #e2e8f0; border-radius:14px; box-shadow:0 4px 14px rgba(15,23,42,.04); }
 .note-panel__header{ display:flex; justify-content:space-between; align-items:center; gap:.75rem; }
-.note-panel__header h2{ margin:0; font-size:1.1rem; }
-.note-panel__body{ display:grid; gap:.75rem; }
-.note-properties{ margin:0; padding:0; display:grid; gap:.85rem; }
+.note-panel__header h2{ margin:0; font-size:1.05rem; font-weight:600; }
+.note-panel__body{ display:grid; gap:.65rem; }
+.note-properties{ margin:0; padding:0; display:grid; gap:.75rem; }
 .note-properties__item{ display:grid; gap:.35rem; }
-.note-properties__item dt{ font-size:.8rem; text-transform:uppercase; letter-spacing:.08em; color:#64748b; }
-.note-properties__item dd{ margin:0; font-size:1rem; color:#0f172a; }
-.note-detail-row{ display:flex; justify-content:space-between; gap:1rem; font-size:.95rem; }
+.note-properties__item dt{ font-size:.78rem; text-transform:uppercase; letter-spacing:.08em; color:#64748b; }
+.note-properties__item dd{ margin:0; font-size:.95rem; color:#0f172a; }
+.note-detail-row{ display:flex; justify-content:space-between; gap:.75rem; font-size:.9rem; }
 .note-detail-label{ font-weight:600; color:#475569; }
-.note-detail-value{ display:flex; gap:.35rem; flex-wrap:wrap; }
-.note-photos{ display:grid; gap:.5rem; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); }
-.note-photo-thumb{ display:block; border-radius:12px; overflow:hidden; box-shadow:0 10px 24px rgba(15,23,42,.15); }
+.note-detail-value{ display:flex; gap:.3rem; flex-wrap:wrap; align-items:center; }
+.note-photos{ display:grid; gap:.4rem; grid-template-columns:repeat(auto-fit,minmax(110px,1fr)); }
+.note-photo-thumb{ display:block; border-radius:10px; overflow:hidden; border:1px solid #e2e8f0; }
 .note-photo-thumb img{ width:100%; height:100%; object-fit:cover; aspect-ratio:4/3; }
-.note-photo-empty{ border:2px dashed rgba(148,163,184,.4); border-radius:12px; display:grid; place-items:center; min-height:110px; font-size:.85rem; }
+.note-photo-empty{ border:1px dashed #cbd5f5; border-radius:10px; display:grid; place-items:center; min-height:100px; font-size:.8rem; color:#64748b; }
 
-.note-discussion{ padding:2rem; display:grid; gap:1.5rem; }
-.note-discussion__body{ display:grid; gap:1.5rem; }
+.note-discussion{ padding:1.75rem; display:grid; gap:1.25rem; background:#fff; border:1px solid #e2e8f0; border-radius:16px; box-shadow:0 6px 18px rgba(15,23,42,.04); }
+.note-discussion__body{ display:grid; gap:1rem; }
 .note-comments{ display:grid; gap:1rem; }
-.note-comment{ border:1px solid rgba(148,163,184,.35); border-radius:1rem; padding:1rem 1.25rem; background:#fff; display:grid; gap:.75rem; }
-.note-comment__header{ display:flex; justify-content:space-between; gap:1rem; align-items:flex-start; }
-.note-comment__timestamp{ display:block; font-size:.8rem; color:#64748b; margin-top:.15rem; }
+.note-comment{ border:1px solid #e2e8f0; border-radius:12px; padding:1rem 1.1rem; background:#fff; display:grid; gap:.6rem; }
+.note-comment__header{ display:flex; justify-content:space-between; gap:.75rem; align-items:flex-start; }
+.note-comment__timestamp{ display:block; font-size:.78rem; color:#64748b; margin-top:.15rem; }
 .note-comment__delete .btn{ font-size:.75rem; }
-.note-comment__body{ white-space:pre-wrap; color:#0f172a; line-height:1.55; }
-.note-comment__footer details{ font-size:.9rem; }
-.note-comment__children{ border-left:3px solid rgba(148,163,184,.4); margin-left:.75rem; padding-left:.75rem; display:grid; gap:.75rem; }
-.note-comment-form{ display:grid; gap:.75rem; }
-.note-comment-form textarea{ width:100%; border-radius:.75rem; border:1px solid #cbd5f5; padding:.65rem .8rem; resize:vertical; }
-.note-comment-form--new label{ display:grid; gap:.4rem; }
+.note-comment__body{ white-space:pre-wrap; color:#0f172a; line-height:1.5; }
+.note-comment__footer details{ font-size:.88rem; }
+.note-comment__children{ border-left:2px solid #e2e8f0; margin-left:.6rem; padding-left:.75rem; display:grid; gap:.75rem; }
+.note-comment-form{ display:grid; gap:.65rem; }
+.note-comment-form textarea{ width:100%; border-radius:.65rem; border:1px solid #d0d7e2; padding:.6rem .75rem; resize:vertical; font-size:.95rem; }
+.note-comment-form--new label{ display:grid; gap:.35rem; }
 
-.badge{ display:inline-flex; align-items:center; gap:.25rem; padding:.3rem .7rem; border-radius:999px; font-size:.75rem; font-weight:600; }
-.badge--muted{ background:rgba(148,163,184,.2); color:#475569; }
-.badge--blue{ background:#dbeafe; color:#1d4ed8; }
-.badge--indigo{ background:#e0e7ff; color:#4338ca; }
-.badge--purple{ background:#ede9fe; color:#6b21a8; }
-.badge--orange{ background:#ffedd5; color:#c2410c; }
-.badge--green{ background:#dcfce7; color:#15803d; }
-.badge--slate{ background:#e2e8f0; color:#334155; }
+.share-modal{ position:fixed; inset:0; z-index:40; display:grid; place-items:center; padding:1.5rem; background:rgba(15,23,42,.35); backdrop-filter:blur(4px); transition:opacity .2s ease; }
+.share-modal.hidden{ opacity:0; pointer-events:none; }
+.share-modal__overlay{ position:absolute; inset:0; }
+.share-modal__dialog{ position:relative; z-index:1; width:min(420px, 100%); background:#fff; border-radius:16px; border:1px solid #e2e8f0; box-shadow:0 18px 40px rgba(15,23,42,.2); display:grid; }
+.share-modal__header{ padding:1.25rem 1.5rem; display:flex; justify-content:space-between; align-items:flex-start; gap:1rem; border-bottom:1px solid #e2e8f0; }
+.share-modal__header h3{ margin:0; font-size:1.1rem; font-weight:600; color:#0f172a; }
+.share-modal__hint{ margin:.35rem 0 0; font-size:.85rem; color:#64748b; }
+.share-modal__form{ display:grid; gap:0; }
+.share-modal__body{ padding:1.25rem 1.5rem; display:grid; gap:1rem; max-height:360px; overflow:auto; }
+.share-modal__search input{ width:100%; border:1px solid #d0d7e2; border-radius:10px; padding:.55rem .75rem; font-size:.95rem; }
+.share-modal__list{ display:grid; gap:.5rem; }
+.share-modal__option{ display:flex; align-items:center; gap:.6rem; padding:.6rem .75rem; border:1px solid #e2e8f0; border-radius:10px; transition:background .15s ease, border-color .15s ease; }
+.share-modal__option:hover{ background:#f8fafc; border-color:#cbd5f5; }
+.share-modal__option input{ width:1rem; height:1rem; }
+.share-modal__badge{ margin-left:auto; font-size:.75rem; color:#64748b; background:#f1f5f9; border-radius:999px; padding:.2rem .55rem; }
+.share-modal__empty{ margin:0; font-size:.85rem; color:#64748b; }
+.share-modal__footer{ padding:1rem 1.5rem; border-top:1px solid #e2e8f0; display:flex; justify-content:space-between; align-items:center; gap:1rem; }
+.share-modal__status{ font-size:.85rem; color:#64748b; min-height:1.2rem; }
+.share-modal__status.is-error{ color:#b91c1c; }
+
+.badge{ display:inline-flex; align-items:center; gap:.25rem; padding:.28rem .6rem; border-radius:999px; font-size:.72rem; font-weight:600; }
+.badge--muted{ background:#f1f5f9; color:#475569; border:1px solid #e2e8f0; }
+.badge--blue{ background:#eff6ff; color:#1d4ed8; }
+.badge--indigo{ background:#eef2ff; color:#4338ca; }
+.badge--purple{ background:#f5f3ff; color:#6b21a8; }
+.badge--orange{ background:#fff7ed; color:#c2410c; }
+.badge--green{ background:#ecfdf5; color:#15803d; }
+.badge--slate{ background:#f1f5f9; color:#334155; }
 .badge--danger{ background:#fee2e2; color:#b91c1c; }
 .badge--amber{ background:#fef3c7; color:#b45309; }
 .badge--teal{ background:#ccfbf1; color:#0f766e; }
 .muted{ color:#64748b; }
 .is-overdue{ color:#b91c1c; font-weight:600; }
 
-.photo-modal .photo-modal-box{ max-width:1080px; width:92vw; height:86vh; }
-.photo-modal .photo-modal-body{ height:calc(86vh - 56px); }
+.btn.secondary{ background:#f8fafc; border:1px solid #cbd5f5; color:#1e293b; }
+.btn.secondary:hover{ background:#e2e8f0; }
+
+.photo-modal .photo-modal-box{ max-width:960px; width:90vw; height:80vh; border-radius:16px; }
+.photo-modal .photo-modal-body{ height:calc(80vh - 56px); }
 
 @media (max-width:720px){
-  .note-hero__inner{ padding:2rem; }
-  .note-icon{ width:56px; height:56px; font-size:1.6rem; }
+  .note-hero__inner{ padding:1.5rem; }
+  .note-icon{ width:48px; height:48px; font-size:1.5rem; }
   .note-layout{ grid-template-columns:1fr; }
+  .note-panel{ padding:1.1rem 1.25rem; }
+  .note-content{ padding:1.35rem; }
 }
 </style>
 
 <script>
 document.addEventListener('DOMContentLoaded', () => {
-  const page   = document.querySelector('[data-note-page]');
-  const grid   = document.getElementById('noteViewPhotoGrid');
-  const modal  = document.getElementById('noteViewPhotoModal');
-  const bodyEl = document.getElementById('noteViewPhotoModalBody');
-  const openAllBtn = document.getElementById('openAllNotePhotos');
-  const csrfField = '<?= CSRF_TOKEN_NAME; ?>';
+  const page        = document.querySelector('[data-note-page]');
+  const grid        = document.getElementById('noteViewPhotoGrid');
+  const modal       = document.getElementById('noteViewPhotoModal');
+  const bodyEl      = document.getElementById('noteViewPhotoModalBody');
+  const openAllBtn  = document.getElementById('openAllNotePhotos');
+  const shareModal  = document.getElementById('noteShareModal');
+  const shareForm   = document.getElementById('noteShareForm');
+  const shareSearch = document.getElementById('noteShareSearch');
+  const shareStatus = document.getElementById('noteShareStatus');
+  const shareEmpty  = document.getElementById('noteShareEmpty');
+  const shareTrigger= document.querySelector('[data-share-open]');
+  const shareSummary= document.querySelector('[data-share-summary]');
+  const shareBadges = document.querySelector('[data-share-list]');
+  const csrfField   = '<?= CSRF_TOKEN_NAME; ?>';
+  const noteId      = page ? (page.getAttribute('data-note-id') || '') : '';
+  const csrfToken   = page ? (page.getAttribute('data-csrf') || '') : '';
+  const canShare    = page && page.getAttribute('data-can-share') === '1';
+  const shareOptionNodes = shareModal ? Array.from(shareModal.querySelectorAll('[data-share-option]')) : [];
+  const shareEmptyText = shareSummary ? (shareSummary.getAttribute('data-empty-text') || 'Private') : 'Private';
+
+  const shareState = {
+    selected: new Set(),
+    options: [],
+  };
+
+  if (canShare) {
+    const rawConfig = page ? (page.getAttribute('data-share-config') || '') : '';
+    if (rawConfig) {
+      try {
+        const parsed = JSON.parse(rawConfig);
+        if (Array.isArray(parsed.selected)) {
+          shareState.selected = new Set(parsed.selected.map((v) => Number(v)));
+        }
+      } catch (err) {
+        console.error('Failed to parse share config', err);
+      }
+    }
+    shareState.options = shareOptionNodes.map((node) => {
+      const checkbox = node.querySelector('input');
+      return {
+        id: Number(checkbox ? checkbox.value : 0),
+        element: node,
+        checkbox,
+        label: (node.dataset.label || '').toLowerCase(),
+      };
+    });
+  }
+
+  function lockScroll() {
+    document.body.style.overflow = 'hidden';
+  }
+
+  function unlockScroll() {
+    const photoOpen = modal && !modal.classList.contains('hidden');
+    const shareOpen = shareModal && !shareModal.classList.contains('hidden');
+    if (!photoOpen && !shareOpen) {
+      document.body.style.overflow = '';
+    }
+  }
 
   if (page) {
-    const csrf = page.getAttribute('data-csrf') || '';
-    const noteId = page.getAttribute('data-note-id') || '';
     page.querySelectorAll('[data-block-toggle]').forEach((input) => {
       if (input.disabled) { return; }
       input.addEventListener('change', () => {
         const uid = input.getAttribute('data-block-toggle');
         if (!uid) { return; }
-        if (!csrf) { input.checked = !input.checked; return; }
+        if (!csrfToken) { input.checked = !input.checked; return; }
         const formData = new FormData();
         formData.append('toggle_block', uid);
         formData.append('checked', input.checked ? '1' : '0');
-        formData.append(csrfField, csrf);
+        formData.append(csrfField, csrfToken);
         fetch(`view.php?id=${noteId}`, {
           method: 'POST',
           body: formData,
           headers: { 'X-Requested-With': 'XMLHttpRequest' },
         })
-        .then((resp) => resp.json())
-        .then((data) => {
-          if (!data || data.ok) { return; }
-          throw new Error(data.message || 'Request failed');
-        })
-        .catch((err) => {
-          console.error(err);
-          input.checked = !input.checked;
-          alert('We could not update that checklist item.');
-        });
+          .then((resp) => resp.json())
+          .then((data) => {
+            if (!data || data.ok) { return; }
+            throw new Error(data.message || 'Request failed');
+          })
+          .catch((err) => {
+            console.error(err);
+            input.checked = !input.checked;
+            alert('We could not update that checklist item.');
+          });
       });
     });
   }
 
-  function openModal(){ modal.classList.remove('hidden'); modal.setAttribute('aria-hidden','false'); document.body.style.overflow='hidden'; }
-  function closeModal(){ modal.classList.add('hidden'); modal.setAttribute('aria-hidden','true'); document.body.style.overflow=''; bodyEl.innerHTML=''; }
+  function openModal() {
+    if (!modal) return;
+    modal.classList.remove('hidden');
+    modal.setAttribute('aria-hidden', 'false');
+    lockScroll();
+  }
+
+  function closeModal() {
+    if (!modal) return;
+    modal.classList.add('hidden');
+    modal.setAttribute('aria-hidden', 'true');
+    if (bodyEl) {
+      bodyEl.innerHTML = '';
+    }
+    unlockScroll();
+  }
 
   if (modal) {
     modal.addEventListener('click', (e) => {
@@ -611,14 +816,10 @@ document.addEventListener('DOMContentLoaded', () => {
         closeModal();
       }
     });
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && !modal.classList.contains('hidden')) {
-        closeModal();
-      }
-    });
   }
 
-  function injectImages(urls){
+  function injectImages(urls) {
+    if (!bodyEl) return;
     const frag = document.createDocumentFragment();
     urls.forEach((u) => {
       if (!u) return;
@@ -657,6 +858,167 @@ document.addEventListener('DOMContentLoaded', () => {
       openModal();
     });
   }
+
+  function applyShareSelections() {
+    shareState.options.forEach((opt) => {
+      if (!opt.checkbox) return;
+      opt.checkbox.checked = shareState.selected.has(opt.id);
+    });
+  }
+
+  function filterShareOptions(term) {
+    if (!canShare) return;
+    const normalized = (term || '').trim().toLowerCase();
+    let visible = 0;
+    shareState.options.forEach((opt) => {
+      const matches = normalized === '' || opt.label.includes(normalized);
+      if (opt.element) {
+        opt.element.hidden = !matches;
+      }
+      if (matches) {
+        visible++;
+      }
+    });
+    if (shareEmpty) {
+      shareEmpty.hidden = visible !== 0;
+    }
+  }
+
+  function updateShareDisplays(shares) {
+    if (shareBadges) {
+      shareBadges.innerHTML = '';
+      if (shares && shares.length) {
+        const frag = document.createDocumentFragment();
+        shares.forEach((share) => {
+          const badge = document.createElement('span');
+          badge.className = 'badge badge--muted';
+          badge.textContent = share.label || `User #${share.id || ''}`;
+          frag.appendChild(badge);
+        });
+        shareBadges.appendChild(frag);
+      }
+    }
+    if (shareSummary) {
+      shareSummary.innerHTML = '';
+      if (shares && shares.length) {
+        const frag = document.createDocumentFragment();
+        shares.forEach((share) => {
+          const badge = document.createElement('span');
+          badge.className = 'badge badge--muted';
+          badge.textContent = share.label || `User #${share.id || ''}`;
+          frag.appendChild(badge);
+        });
+        shareSummary.appendChild(frag);
+      } else {
+        const span = document.createElement('span');
+        span.className = 'muted';
+        span.textContent = shareEmptyText;
+        shareSummary.appendChild(span);
+      }
+    }
+  }
+
+  function openShareModal() {
+    if (!shareModal) return;
+    applyShareSelections();
+    filterShareOptions(shareSearch ? shareSearch.value : '');
+    shareModal.classList.remove('hidden');
+    shareModal.setAttribute('aria-hidden', 'false');
+    lockScroll();
+    if (shareStatus) {
+      shareStatus.textContent = '';
+      shareStatus.classList.remove('is-error');
+    }
+    if (shareSearch) {
+      shareSearch.focus();
+      shareSearch.select();
+    }
+  }
+
+  function closeShareModal() {
+    if (!shareModal) return;
+    shareModal.classList.add('hidden');
+    shareModal.setAttribute('aria-hidden', 'true');
+    if (shareStatus) {
+      shareStatus.textContent = '';
+      shareStatus.classList.remove('is-error');
+    }
+    unlockScroll();
+  }
+
+  if (shareModal) {
+    shareModal.addEventListener('click', (event) => {
+      if (event.target.matches('[data-share-close], .share-modal__overlay')) {
+        event.preventDefault();
+        closeShareModal();
+      }
+    });
+  }
+
+  if (shareTrigger) {
+    shareTrigger.addEventListener('click', (event) => {
+      event.preventDefault();
+      openShareModal();
+    });
+  }
+
+  if (shareSearch) {
+    shareSearch.addEventListener('input', (event) => {
+      filterShareOptions(event.target.value || '');
+    });
+  }
+
+  if (shareForm) {
+    shareForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      if (!canShare || !noteId) { return; }
+      const formData = new FormData(shareForm);
+      fetch(`view.php?id=${noteId}`, {
+        method: 'POST',
+        body: formData,
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      })
+        .then((resp) => resp.json())
+        .then((data) => {
+          if (!data || !data.ok) {
+            throw new Error((data && data.message) || 'Failed to update shares');
+          }
+          const nextSelected = Array.isArray(data.selected) ? data.selected.map((v) => Number(v)) : [];
+          shareState.selected = new Set(nextSelected);
+          applyShareSelections();
+          updateShareDisplays(Array.isArray(data.shares) ? data.shares : []);
+          if (shareStatus) {
+            shareStatus.textContent = 'Access updated';
+            shareStatus.classList.remove('is-error');
+            setTimeout(() => {
+              if (shareStatus.textContent === 'Access updated') {
+                shareStatus.textContent = '';
+              }
+            }, 3000);
+          }
+        })
+        .catch((err) => {
+          console.error(err);
+          if (shareStatus) {
+            shareStatus.textContent = 'Could not update shares.';
+            shareStatus.classList.add('is-error');
+          }
+        });
+    });
+  }
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') { return; }
+    if (shareModal && !shareModal.classList.contains('hidden')) {
+      closeShareModal();
+      event.preventDefault();
+      return;
+    }
+    if (modal && !modal.classList.contains('hidden')) {
+      closeModal();
+      event.preventDefault();
+    }
+  });
 });
 </script>
 

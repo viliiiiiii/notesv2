@@ -1064,6 +1064,54 @@ function notes_update_shares(int $noteId, array $userIds): void {
         throw $e;
     }
 }
+
+function notes_apply_shares(int $noteId, array $userIds, array $note, bool $notify = true): array {
+    $ownerId = (int)($note['user_id'] ?? 0);
+    $selected = array_values(array_unique(array_filter(array_map('intval', $userIds))));
+    if ($ownerId > 0) {
+        $selected = array_values(array_diff($selected, [$ownerId]));
+    }
+
+    $before = array_map('intval', notes_get_share_user_ids($noteId) ?: []);
+
+    notes_update_shares($noteId, $selected);
+
+    $after  = array_map('intval', notes_get_share_user_ids($noteId) ?: []);
+    $added  = array_values(array_diff($after, $before));
+    $removed= array_values(array_diff($before, $after));
+
+    if ($notify && $added) {
+        try {
+            $me   = current_user();
+            $who  = trim((string)($me['email'] ?? 'Someone')) ?: 'Someone';
+            $title= trim((string)($note['title'] ?? 'Untitled')) ?: 'Untitled';
+            $date = (string)($note['note_date'] ?? '');
+            $titleMsg = 'A note was shared with you';
+            $bodyMsg  = "“{$title}” {$date} — shared by {$who}";
+            $link     = '/notes/view.php?id=' . (int)$noteId;
+            $payload  = ['note_id' => (int)$noteId, 'by' => $who];
+
+            if (function_exists('notify_users')) {
+                notify_users($added, 'note.shared', $titleMsg, $bodyMsg, $link, $payload);
+            }
+        } catch (Throwable $e) {
+            error_log('notify_users failed: ' . $e->getMessage());
+        }
+    }
+
+    try {
+        log_event('note.share', 'note', (int)$noteId, ['added' => $added, 'removed' => $removed]);
+    } catch (Throwable $e) {
+        // logging optional; ignore
+    }
+
+    return [
+        'before'  => $before,
+        'after'   => $after,
+        'added'   => $added,
+        'removed' => $removed,
+    ];
+}
 function notes_fetch_users_from(PDO $pdo, array $ids): array {
     if (!$ids) return [];
     $placeholders = implode(',', array_fill(0, count($ids), '?'));
